@@ -15,6 +15,8 @@ public sealed class BulkRegistrationForm : Form
     private readonly Button create = new() { Text = "範囲を保存", AutoSize = true };
     private readonly Button run = new() { Text = "開始／再開", AutoSize = true };
     private readonly Button pause = new() { Text = "一時停止", AutoSize = true, Enabled = false };
+    private readonly Button draft = new() { Text = "XML作成（未送信）", AutoSize = true };
+    private string? draftDirectory;
     private readonly Label counts = new() { AutoSize = true };
     private readonly Label status = new() { AutoSize = true, MaximumSize = new Size(1020, 0) };
     private readonly StationDisplay stations = new("患者・保険情報取得", "受付番号取得", "処理要求中", "完了");
@@ -37,7 +39,7 @@ public sealed class BulkRegistrationForm : Form
         layout.Controls.Add(new Label { Text = "照会番号の一括登録", AutoSize = true, Font = new Font("Yu Gothic UI", 16, FontStyle.Bold) }, 0, 0);
         layout.Controls.Add(destination, 0, 1);
         var range = Row();
-        range.Controls.AddRange([Caption("診察券番号"), from, Caption("から"), to, Caption("まで"), create, run, pause]);
+        range.Controls.AddRange([Caption("診察券番号"), from, Caption("から"), to, Caption("まで"), create, run, pause, draft]);
         layout.Controls.Add(range, 0, 2);
         var previous = Row(); previous.Controls.AddRange([Caption("保存した範囲"), history]);
         var refresh = new Button { Text = "履歴を再読込", AutoSize = true }; previous.Controls.Add(refresh);
@@ -49,10 +51,13 @@ public sealed class BulkRegistrationForm : Form
         var xml = new Button { Text = "単件XMLの作成・確認", AutoSize = true };
         var open = new Button { Text = "結果保存フォルダー", AutoSize = true };
         var diagnose = new Button { Text = "Dynamics COM診断", AutoSize = true };
-        tools.Controls.AddRange([diagnose, xml, open]); footer.Controls.Add(tools); layout.Controls.Add(footer, 0, 7);
+        var openDraft = new Button { Text = "未送信XMLフォルダー", AutoSize = true };
+        openDraft.Click += (_, _) => Guard(() => { string path = draftDirectory ?? Path.Combine(MainForm.DataDirectory, "Work", "ReferenceNumber"); Directory.CreateDirectory(path); Process.Start(new ProcessStartInfo(path) { UseShellExecute = true }); });
+        tools.Controls.AddRange([diagnose, xml, open, openDraft]); footer.Controls.Add(tools); layout.Controls.Add(footer, 0, 7);
         Controls.Add(layout);
         create.Click += async (_, _) => await CreateJobAsync();
         run.Click += async (_, _) => await RunAsync();
+        draft.Click += async (_, _) => await CreateDraftsAsync();
         pause.Click += (_, _) => { cancellation?.Cancel(); status.Text = "一時停止中…送信済み要求の結果待ちは保存されます。"; };
         history.SelectedIndexChanged += (_, _) => Guard(() =>
         {
@@ -94,27 +99,27 @@ public sealed class BulkRegistrationForm : Form
         preparing = true;
         try
         {
-        UpdateButtons();
-        string oqsRoot = AgentSettings.NormalizeRoot(AgentSettings.Load(MainForm.DataDirectory).OqsRoot);
-        status.Text = "Dynamicsの医院情報から医療機関コードを取得しています…";
-        string institution = await DynamicsPatientProvider.ReadInstitutionCodeAsync(CancellationToken.None);
-        using var lease = store.AcquireLease();
-        var job = new ReferenceRegistrationJob { InstitutionCode = institution, OqsRoot = oqsRoot, From = (long)from.Value, To = (long)to.Value,
-            InsuranceBranchField = "枝番", RemoveChartBranchDigit = true };
-        job.Validate();
-        // Preserve old runs. Overlapping ranges require reviewing their history rather than silently re-registering.
-        foreach (var id in store.ListIds())
-        {
-            var existing = store.Load(id);
-            if (selected == existing.Id && existing.Entries.Count == 0 && existing.From == job.From && existing.To == job.To && existing.InstitutionCode == job.InstitutionCode)
+            UpdateButtons();
+            string oqsRoot = AgentSettings.NormalizeRoot(AgentSettings.Load(MainForm.DataDirectory).OqsRoot);
+            status.Text = "Dynamicsの医院情報から医療機関コードを取得しています…";
+            string institution = await DynamicsPatientProvider.ReadInstitutionCodeAsync(CancellationToken.None);
+            using var lease = store.AcquireLease();
+            var job = new ReferenceRegistrationJob { InstitutionCode = institution, OqsRoot = oqsRoot, From = (long)from.Value, To = (long)to.Value,
+                InsuranceBranchField = "枝番", RemoveChartBranchDigit = true };
+            job.Validate();
+            // Preserve old runs. Overlapping ranges require reviewing their history rather than silently re-registering.
+            foreach (var id in store.ListIds())
             {
-                job.Id = existing.Id; job.CreatedAt = existing.CreatedAt; continue;
+                var existing = store.Load(id);
+                if (selected == existing.Id && existing.Entries.Count == 0 && existing.From == job.From && existing.To == job.To && existing.InstitutionCode == job.InstitutionCode)
+                {
+                    job.Id = existing.Id; job.CreatedAt = existing.CreatedAt; continue;
+                }
+                if (existing.InstitutionCode == job.InstitutionCode && existing.From <= job.To && existing.To >= job.From)
+                    throw new InvalidOperationException("同じ医療機関に重なる保存範囲があります。既存の履歴を選択して再開してください。");
             }
-            if (existing.InstitutionCode == job.InstitutionCode && existing.From <= job.To && existing.To >= job.From)
-                throw new InvalidOperationException("同じ医療機関に重なる保存範囲があります。既存の履歴を選択して再開してください。");
-        }
-        store.Save(job); ReloadHistory(job.Id);
-        status.Text = "範囲を保存しました。開始するとOQSへ登録要求を送信します。";
+            store.Save(job); ReloadHistory(job.Id);
+            status.Text = "範囲を保存しました。開始するとOQSへ登録要求を送信します。";
         }
         catch (Exception ex) { status.Text = "範囲を保存できません: " + ex.Message; }
         finally { preparing = false; Guard(UpdateButtons); }
@@ -139,11 +144,42 @@ public sealed class BulkRegistrationForm : Form
     }
     private void UpdateButtons()
     {
-        create.Enabled = history.Enabled = !IsRunning; pause.Enabled = cancellation is not null;
+        draft.Enabled = create.Enabled = history.Enabled = !IsRunning; pause.Enabled = cancellation is not null;
         var job = selected is { } id ? store.Load(id) : null;
         run.Enabled = !IsRunning && job is not null && !job.IsFinished && (provider is not null || job.InsuranceBranchField.Length > 0 || job.Entries.Any(e => !e.IsTerminal && e.Stage != RegistrationStage.Pending));
         from.Enabled = to.Enabled = !IsRunning;
     }
+    private async Task CreateDraftsAsync()
+    {
+        if (IsRunning) return;
+        long first = (long)from.Value, last = (long)to.Value;
+        if (last < first || last - first >= 100000) { status.Text = "患者番号の範囲を確認してください（1回最大100000番号）。"; return; }
+        cancellation = new CancellationTokenSource();
+        var token = cancellation.Token;
+        var rows = new System.ComponentModel.BindingList<DraftView>();
+        try
+        {
+            UpdateButtons();
+            grid.DataSource = rows;
+            status.Text = "Dynamicsから医院情報・主保険を取得してXMLを作成します（未送信）。";
+            stations.SetState(0, true);
+            string institution = await DynamicsPatientProvider.ReadInstitutionCodeAsync(token);
+            draftDirectory = Path.Combine(MainForm.DataDirectory, "Work", "ReferenceNumber", "Draft_" + DateTime.Now.ToString("yyyyMMdd_HHmmss") + "_" + Guid.NewGuid().ToString("N")[..8]);
+            destination.Text = "未送信XML: " + draftDirectory;
+            var progress = new Progress<ReferenceDraftRow>(row =>
+            {
+                rows.Add(new(row.PatientId, row.RawChartNo, row.Status, row.Code, row.FileName));
+                counts.Text = $"XML作成 {rows.Count(r => r.ファイル名.Length > 0)} 件　要確認・患者なし {rows.Count(r => r.ファイル名.Length == 0)} 件　確認済み {rows.Count}／{last - first + 1} 番号（未送信・未登録）";
+            });
+            var exporter = new ReferenceDraftExporter(provider ?? new DynamicsPatientProvider("枝番", true, institution), MainForm.DataDirectory);
+            await Task.Run(() => exporter.ExportAsync(institution, first, last, draftDirectory, progress, token));
+            status.Text = "XML作成が終了しました。未送信XMLフォルダーで確認できます。登録を行う場合は範囲を保存し、開始／再開を押してください。";
+        }
+        catch (OperationCanceledException) { status.Text = "XML作成を停止しました。作成済みXMLと確認結果はローカルWorkに残っています（未送信）。"; }
+        catch (Exception ex) { status.Text = "XML作成を停止しました: " + ex.Message; }
+        finally { cancellation.Dispose(); cancellation = null; stations.SetState(-1, false); Guard(UpdateButtons); }
+    }
+    private sealed record DraftView(string 患者ID, string 採用カルテ番号, string 状態, string 結果コード, string ファイル名);
     private async Task RunAsync()
     {
         if (selected is not { } id || IsRunning) return;

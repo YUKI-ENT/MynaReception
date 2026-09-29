@@ -6,7 +6,7 @@ public sealed class StationDisplay : UserControl
     private readonly Label[] stations;
     private readonly System.Windows.Forms.Timer timer = new() { Interval = 500 };
     private int current = -1;
-    private bool blink, running, failed;
+    private bool blink, running, failed, completed;
     public StationDisplay(params string[] titles)
     {
         Height = 88; Dock = DockStyle.Top;
@@ -24,16 +24,16 @@ public sealed class StationDisplay : UserControl
         Controls.Add(layout);
         timer.Tick += (_, _) => { blink = !blink; PaintState(); };
     }
-    public void SetState(int index, bool isRunning, bool hasError = false)
+    public void SetState(int index, bool isRunning, bool hasError = false, bool isCompleted = false)
     {
-        current = index; running = isRunning; failed = hasError; blink = true;
+        current = index; running = isRunning; failed = hasError; completed = isCompleted; blink = true;
         timer.Enabled = isRunning; PaintState();
     }
     private void PaintState()
     {
         for (int i = 0; i < stations.Length; i++)
             stations[i].ForeColor = i < current ? Color.LightGreen : i != current ? Color.SlateGray
-                : failed ? Color.Salmon : running ? (blink ? Color.Gold : Color.FromArgb(108, 91, 39)) : current == stations.Length - 1 ? Color.LightGreen : Color.Gold;
+                : failed ? Color.Salmon : running ? (blink ? Color.Gold : Color.FromArgb(108, 91, 39)) : completed || current == stations.Length - 1 ? Color.LightGreen : Color.Gold;
     }
     protected override void Dispose(bool disposing)
     {

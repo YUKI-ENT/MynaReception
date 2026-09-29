@@ -75,4 +75,8 @@ File.WriteAllText(Path.Combine(settingsRoot, "settings.json"), "broken");
 try { ReceptionAgent.AgentSettings.Load(settingsRoot); Check(false, "corrupt settings"); }
 catch (System.Text.Json.JsonException) { Check(true, "corrupt settings not silently reset"); }
 await BulkTests.Run(Check);
+await DynamicsTests.Run(Check);
+await FaceTests.Run(Check);
+FaceInsuranceTests.Run(Check);
+await CaptureTests.Run(Check);
 Console.WriteLine($"All {checks} checks passed (synthetic data only).");

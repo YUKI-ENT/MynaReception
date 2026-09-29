@@ -28,7 +28,7 @@ internal sealed class DynamicsPatientProvider(string branchField, bool removeLas
         if (branchField != "枝番" || !removeLastDigit)
             throw new InvalidOperationException("旧履歴の項目対応が確定仕様と異なります。未処理の範囲は再保存し、処理済み履歴は管理者が確認してください。");
         using var schema = await DynamicsComReader.ReadAsync("SELECT * FROM [患者保険マスター] WHERE 1=0", token);
-        foreach (string field in new[] { "カルテ番号", "保険者番号", "記号", "番号", branchField })
+        foreach (string field in new[] { "カルテ番号", "保険者番号", "記号", "番号", "主保険", branchField })
             if (!schema.Columns.Contains(field)) throw new InvalidOperationException($"患者保険マスターに [{field}] がありません。COM診断で項目を確認してください。");
         using var patient = await DynamicsComReader.ReadAsync("SELECT [カルテ番号] FROM [患者マスター] WHERE 1=0", token);
     }
@@ -39,27 +39,21 @@ internal sealed class DynamicsPatientProvider(string branchField, bool removeLas
         // CStr accommodates both numeric and text chart columns. Values come only from validated digits.
         string[] keys = Enumerable.Range(0, 10).Select(n => "'" + patientId + n.ToString(CultureInfo.InvariantCulture) + "'").ToArray();
         string condition = "CStr(P.[カルテ番号]) IN (" + string.Join(",", keys) + ")";
-        using var patients = await DynamicsComReader.ReadAsync("SELECT P.[カルテ番号] FROM [患者マスター] AS P WHERE " + condition, cancellationToken);
-        if (patients.Rows.Count == 0) return null;
-        string sql = "SELECT P.[カルテ番号] AS RawChartNo, H.[保険者番号] AS Insurer, H.[記号] AS CardSymbol, H.[番号] AS CardNumber, H.[枝番] AS CardBranch " +
-            "FROM [患者マスター] AS P INNER JOIN [患者保険マスター] AS H ON P.[カルテ番号]=H.[カルテ番号] WHERE " + condition;
+        string sql = "SELECT P.[カルテ番号] AS RawChartNo, H.[保険者番号] AS Insurer, H.[記号] AS CardSymbol, H.[番号] AS CardNumber, H.[枝番] AS CardBranch, H.[主保険] AS IsMain " +
+            "FROM [患者マスター] AS P LEFT JOIN [患者保険マスター] AS H ON P.[カルテ番号]=H.[カルテ番号] WHERE " + condition;
         using var rows = await DynamicsComReader.ReadAsync(sql, cancellationToken);
-        var candidates = new List<DynamicsPatient>();
+        var candidates = new List<DynamicsInsuranceCandidate>();
         foreach (DataRow row in rows.Rows)
         {
             string Value(string key) => row[key] == DBNull.Value ? "" : Convert.ToString(row[key], CultureInfo.InvariantCulture)?.Trim() ?? "";
             string raw = Value("RawChartNo");
             string id = DynamicsChartNumber.ToPatientId(raw);
             if (id != patientId) throw new DynamicsPatientDataException("PATIENT_ID_MISMATCH");
-            if (Value("Insurer").Length == 0) continue;
             string branch = Value("CardBranch");
             // Numeric zero is a known value; DBNull/empty must never become 00.
             if (row["CardBranch"] is not string && branch.Length is > 0 and < 2) branch = branch.PadLeft(2, '0');
-            candidates.Add(new(new(raw, id), new(Value("Insurer"), Value("CardSymbol"), Value("CardNumber"), branch, false)));
+            candidates.Add(new(new(new(raw, id), new(Value("Insurer"), Value("CardSymbol"), Value("CardNumber"), branch, false)), DynamicsInsuranceSelection.ReadMainFlag(row["IsMain"])));
         }
-        var distinct = candidates.DistinctBy(c => c.Insurance).ToArray();
-        if (distinct.Length == 0) throw new DynamicsPatientDataException("NO_HEALTH_INSURANCE");
-        if (distinct.Length != 1) throw new DynamicsPatientDataException("AMBIGUOUS_INSURANCE");
-        return distinct[0];
+        return DynamicsInsuranceSelection.Select(patientId, candidates);
     }
 }
