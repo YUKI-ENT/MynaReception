@@ -1,6 +1,6 @@
 # ReceptionAgent 実装・確認手順
 
-現在はBulk登録を保留し、face XML自動取込・患者検索・予約APIを実装しています。[自動取込の設定と操作](ReceptionAgent_FaceCapture.md) を参照してください。操作と照合ルールは [face XML患者検索](ReceptionAgent_FacePatientLookup.md) を参照してください。以下のBulk登録手順は既存機能の記録です。
+現在はBulk登録を廃止し、DGVからの手動受付操作と照会番号単件登録を実装しています。最新の操作は [手動受付・単件登録](ReceptionAgent_ManualReception.md) を参照してください。[自動取込の設定と操作](ReceptionAgent_FaceCapture.md) を参照してください。操作と照合ルールは [face XML患者検索](ReceptionAgent_FacePatientLookup.md) を参照してください。以下のBulk登録手順は既存機能の記録です。
 
 ## 現在の構成
 

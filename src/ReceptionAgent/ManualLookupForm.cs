@@ -5,7 +5,6 @@ namespace ReceptionAgent;
 public sealed class ManualLookupForm : Form
 {
     internal static string DataDirectory => Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "ReceptionAgent");
-    private BulkRegistrationForm? bulk;
     private CancellationTokenSource? searchCancellation;
     private readonly StationDisplay stations = new("face XML読込", "患者ID取得", "予約番号取得", "Dynamics受付転送", "iCall操作", "発券");
     private readonly Label status = new() { AutoSize = true, MaximumSize = new Size(1040, 0), Text = "face XMLを選択して患者IDを検索してください。後続の受付操作は未接続です。" };
@@ -27,12 +26,6 @@ public sealed class ManualLookupForm : Form
         layout.Controls.Add(new Label { AutoSize = true, Text = "この画面は患者照合のテスト用です。履歴保存・予約API送信はメイン画面の監視から行います。" }, 0, 4);
         var commands = new FlowLayoutPanel { AutoSize = true, Dock = DockStyle.Fill };
         var search = new Button { Text = "face XMLを選択・患者検索", AutoSize = true, Padding = new Padding(10, 5, 10, 5) };
-        var open = new Button { Text = "照会番号 Bulk Console（保留）", AutoSize = true, Padding = new Padding(10, 5, 10, 5) };
-        open.Click += (_, _) =>
-        {
-            if (bulk is null || bulk.IsDisposed) bulk = new BulkRegistrationForm();
-            bulk.Show(this); bulk.Activate();
-        };
         var settings = new Button { Text = "設定", AutoSize = true, Padding = new Padding(10, 5, 10, 5) };
         settings.Click += (_, _) =>
         {
@@ -81,11 +74,10 @@ public sealed class ManualLookupForm : Form
             }
             finally { searchCancellation?.Dispose(); searchCancellation = null; search.Enabled = settings.Enabled = true; }
         };
-        commands.Controls.AddRange([search, settings, open]); layout.Controls.Add(commands, 0, 5); Controls.Add(layout);
+        commands.Controls.AddRange([search, settings]); layout.Controls.Add(commands, 0, 5); Controls.Add(layout);
         FormClosing += (_, e) =>
         {
             if (searchCancellation is not null) { e.Cancel = true; searchCancellation.Cancel(); status.Text = "検索を停止しています。停止後に閉じてください。"; }
-            else if (bulk?.IsRunning == true) { e.Cancel = true; MessageBox.Show(this, "Bulk Consoleで一時停止してから終了してください。"); }
         };
     }
 }

@@ -17,6 +17,7 @@ internal static class CaptureTests
         var store = new CaptureStore(Path.Combine(root, "db"));
         var selected = new FacePatientMatch("11", "試験太郎", "ﾃｽﾄ ﾀﾛｳ", new DateOnly(2024, 10, 21), ["110"]);
         Task<FaceLookupResult> Lookup(FaceIdentity face, CancellationToken token) => Task.FromResult(new FaceLookupResult([selected], selected, false, "一致"));
+        settings.MarkArrived = settings.LinkReservation = true;
         var monitor = new FaceCaptureMonitor(store, settings, Lookup);
         string sample = "<?xml version=\"1.0\" encoding=\"UTF-8\"?><XmlMsg><MessageHeader><SegmentOfResult>1</SegmentOfResult><MedicalInstitutionCode>0110012345</MedicalInstitutionCode></MessageHeader><MessageBody><ResultList><ResultOfQualificationConfirmation><Name>試験太郎</Name><NameKana>ﾃｽﾄ ﾀﾛｳ</NameKana><Birthdate>20241021</Birthdate><InsurerNumber>00123456</InsurerNumber><InsuredCardSymbol>TEST</InsuredCardSymbol><InsuredIdentificationNumber>001</InsuredIdentificationNumber><InsuredBranchNumber>01</InsuredBranchNumber></ResultOfQualificationConfirmation></ResultList><ProcessingResultStatus>1</ProcessingResultStatus></MessageBody></XmlMsg>";
         string Name(string prefix) => $"OQSsiquc01res_face_{prefix}_{DateTime.Now:yyyyMMddHHmmss}.xml";
@@ -25,6 +26,7 @@ internal static class CaptureTests
         check(await monitor.CaptureAsync(source, DateTime.Now, default), "missing source recovered from trash");
         check(!await monitor.CaptureAsync(trash, DateTime.Now, default), "same file from trash is not captured twice");
         var record = store.List().Single();
+        check(!record.MarkArrived && !record.LinkReservation, "capture ignores legacy automatic operation settings");
         check(record.Face?.Insurance?.InsurerNumber == "00123456" && record.XmlPatientName == "試験太郎" && record.FileCreatedAt is not null, "SQLite retains patient insurance creation date and XML");
         var restoredStore = new CaptureStore(Path.Combine(root, "db"));
         check(restoredStore.ReadXml(record.Id).SequenceEqual(Encoding.UTF8.GetBytes(sample)), "original XML survives reopening SQLite");
@@ -71,8 +73,28 @@ internal static class CaptureTests
             if (second.PendingRequest is not null) await Reply(second);
             await workflow.StepAsync(second, default);
         }
-        check(second.Stage == CaptureStage.Completed && second.Responses.Select(r => r.Code).SequenceEqual(new[] { "found", "invoked", "invoked" }), "configured arrival then link responses persist");
+        check(second.Stage == CaptureStage.Completed && second.Responses.Count == 1, "legacy flags do not automatically operate reservations");
+        await workflow.QueueManualAsync(second.Id, "arrived", default);
+        second = store.Get(second.Id);
+        check(second.PendingRequest?.ExpectedReceptionNo == "7" && second.PendingRequest.ExpectedPatientName == "試験太郎", "manual arrival binds expected reservation");
+        await Reply(second); await workflow.StepByIdAsync(second.Id, default);
+        second = store.Get(second.Id);
+        check(second.Stage == CaptureStage.Completed && second.LinkResult == "未要求", "manual arrival does not invoke link");
+        try { await workflow.QueueManualAsync(second.Id, "arrived", default); check(false, "duplicate arrival"); }
+        catch (InvalidDataException) { check(true, "completed arrival cannot be dispatched twice"); }
+        await workflow.QueueManualAsync(second.Id, "link", default);
+        second = store.Get(second.Id);
+        await Reply(second); await workflow.StepByIdAsync(second.Id, default); second = store.Get(second.Id);
+        check(second.Responses.Select(r => r.Code).SequenceEqual(new[] { "found", "invoked", "invoked" }), "manual arrival and link results persist independently");
         check(second.ArrivalResult.StartsWith("invoked") && second.LinkResult.StartsWith("invoked"), "operation dispatch distinguished in results");
+        var legacy = new CaptureRecord { FileName = Name("legacy"), ContentHash = "legacy", GeneratedAt = DateTime.Now,
+            Lookup = new([selected], selected, false, "一致"), ReceptionNo = "7", ReservationPatientName = "試験太郎",
+            RequestDirectory = settings.ICallRequestDirectory, ResponseDirectory = settings.ICallResponseDirectory, Stage = CaptureStage.ArrivedWaiting };
+        legacy.PendingRequest = new("ra-" + legacy.Id + "-arrived", "arrived", "11", "7", "試験太郎");
+        store.Capture(legacy, Encoding.UTF8.GetBytes(sample));
+        await workflow.StepAsync(legacy, default);
+        check(legacy.Stage == CaptureStage.NeedsReview && !File.Exists(Path.Combine(settings.ICallRequestDirectory, legacy.PendingRequest.RequestId + ".json")),
+            "legacy automatic pending operation halted without publication");
         var next = new CaptureRecord { FileName = Name("notfound"), ContentHash = "synthetic", GeneratedAt = DateTime.Now, Encoding = FaceXmlEncoding.Utf8,
             RequestDirectory = settings.ICallRequestDirectory, ResponseDirectory = settings.ICallResponseDirectory, MarkArrived = true, LinkReservation = true };
         store.Capture(next, Encoding.UTF8.GetBytes(sample));

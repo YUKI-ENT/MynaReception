@@ -5,6 +5,7 @@ namespace ReceptionAgent.Reception;
 
 public sealed class CaptureStore
 {
+    internal SemaphoreSlim WorkflowGate { get; } = new(1, 1);
     private readonly string connectionString;
     private readonly string directory;
     public CaptureStore(string directory)
@@ -65,6 +66,17 @@ public sealed class CaptureStore
             record.Conflict = reader.GetInt32(1) != 0; records.Add(record);
         }
         return records;
+    }
+    public CaptureRecord Get(string id)
+    {
+        using var connection = Open(); using var command = connection.CreateCommand();
+        command.CommandText = "SELECT data,conflict FROM captures WHERE id=$id";
+        command.Parameters.AddWithValue("$id", id);
+        using var reader = command.ExecuteReader();
+        if (!reader.Read()) throw new InvalidDataException("取込記録がありません。");
+        var record = JsonSerializer.Deserialize<CaptureRecord>(reader.GetString(0)) ?? throw new InvalidDataException("取込記録が不正です。");
+        record.Conflict = reader.GetInt32(1) != 0;
+        return record;
     }
     public byte[] ReadXml(string id)
     {

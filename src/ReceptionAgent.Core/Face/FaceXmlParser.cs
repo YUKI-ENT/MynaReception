@@ -8,7 +8,7 @@ namespace ReceptionAgent.Face;
 
 [JsonConverter(typeof(JsonStringEnumConverter))]
 public enum FaceXmlEncoding { Utf8, ShiftJis }
-public sealed record FaceIdentity(string NameKana, DateOnly Birthdate, string InstitutionCode, FaceInsurance? Insurance = null, string? PatientName = null);
+public sealed record FaceIdentity(string NameKana, DateOnly Birthdate, string InstitutionCode, FaceInsurance? Insurance = null, string? PatientName = null, string? ReferenceNumber = null);
 
 public static class FaceXmlParser
 {
@@ -43,7 +43,7 @@ public static class FaceXmlParser
         string institution = One(header, "MedicalInstitutionCode").Value.Trim();
         if (institution.Length != 10 || institution.Any(c => c is < '0' or > '9')) throw new InvalidDataException("XMLの医療機関コードが不正です。");
         return new(name, date, institution, new FaceInsurance(Optional(record, "InsurerNumber"), Optional(record, "InsuredCardSymbol") ?? "",
-            Optional(record, "InsuredIdentificationNumber"), Optional(record, "InsuredBranchNumber")), Optional(record, "Name"));
+            Optional(record, "InsuredIdentificationNumber"), Optional(record, "InsuredBranchNumber")), Optional(record, "Name"), Optional(record, "ReferenceNumber")?.Trim());
     }
     private static string? Optional(XElement parent, string name)
     {

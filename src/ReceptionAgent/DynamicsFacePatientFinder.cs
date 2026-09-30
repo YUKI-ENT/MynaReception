@@ -27,22 +27,13 @@ internal static class DynamicsFacePatientFinder
             candidates.Add(new(Value("カルテ番号"), Value("氏名"), kana, date));
         }
         var matches = PatientNameMatcher.Match(identity, candidates);
-        if (matches.Count < 2 || !PatientInsuranceMatcher.IsUsable(identity.Insurance))
-            return PatientInsuranceMatcher.Resolve(matches, identity.Insurance, []);
-        var insuranceCandidates = new List<FaceInsuranceCandidate>();
-        foreach (var match in matches)
+        if (!string.IsNullOrWhiteSpace(identity.ReferenceNumber))
         {
-            token.ThrowIfCancellationRequested();
-            if (match.RawChartNumbers.Any(n => n.Length == 0 || n.Any(c => c is < '0' or > '9')))
-                throw new InvalidDataException("候補のカルテ番号が不正です。");
-            string keys = string.Join(",", match.RawChartNumbers.Select(n => "'" + n + "'"));
-            using var insurance = await DynamicsComReader.ReadAsync("SELECT [カルテ番号], [保険者番号], [記号], [番号], [枝番] FROM [患者保険マスター] WHERE CStr([カルテ番号]) IN (" + keys + ")", token);
-            foreach (DataRow row in insurance.Rows)
-            {
-                string Value(string key) => row[key] is DBNull ? "" : Convert.ToString(row[key], CultureInfo.InvariantCulture)?.Trim() ?? "";
-                insuranceCandidates.Add(new(Value("カルテ番号"), new(Value("保険者番号"), Value("記号"), Value("番号"), Value("枝番"))));
-            }
+            matches = matches.Where(m => m.PatientId == identity.ReferenceNumber).ToArray();
+            return new(matches, matches.Count == 1 ? matches[0] : null, false,
+                matches.Count == 1 ? "照会番号と氏名・生年月日が一致" : "照会番号とDynamicsの患者情報を確認してください。");
         }
-        return PatientInsuranceMatcher.Resolve(matches, identity.Insurance, insuranceCandidates);
+        return new(matches, matches.Count == 1 ? matches[0] : null, false,
+            matches.Count == 0 ? "PATIENT_NOT_FOUND" : matches.Count > 1 ? "PATIENT_AMBIGUOUS" : "氏名カナ・生年月日で一意に一致");
     }
 }

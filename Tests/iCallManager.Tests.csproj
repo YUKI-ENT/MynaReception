@@ -10,5 +10,6 @@
     <Compile Include="..\Core\*.cs" Link="Core\%(Filename)%(Extension)" />
     <Compile Include="..\Bridge\*.cs" Link="Bridge\%(Filename)%(Extension)" />
     <Compile Include="..\ICall\RowParser.cs" Link="ICall\RowParser.cs" />
+    <Compile Include="..\ICall\DummyAssignmentParser.cs" Link="ICall\DummyAssignmentParser.cs" />
   </ItemGroup>
 </Project>

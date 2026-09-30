@@ -19,7 +19,7 @@ public sealed class AgentSettingsForm : Form
             browse.Click += (_, _) => { using var dialog = new FolderBrowserDialog(); if (dialog.ShowDialog(this) == DialogResult.OK) path.Text = dialog.SelectedPath; };
             line.Controls.Add(path, 0, 0); line.Controls.Add(browse, 1, 0); layout.Controls.Add(line); return path;
         }
-        var oqs = Folder("OQS連携フォルダー（Bulk Console用／req・res の親）", current.OqsRoot);
+        var oqs = Folder("OQS連携フォルダー（照会番号単件登録用／req・res の親）", current.OqsRoot);
         var face = Folder("face XML出力フォルダー", current.FaceXmlDirectory);
         var trash = Folder("Dynamics取込後のtrashフォルダー", current.FaceTrashDirectory);
         var request = Folder("iCallManager requestフォルダー（req）", current.ICallRequestDirectory);
@@ -28,10 +28,8 @@ public sealed class AgentSettingsForm : Form
         var encoding = new ComboBox { DropDownStyle = ComboBoxStyle.DropDownList, Width = 220, AccessibleName = "face XMLの文字コード" };
         encoding.Items.AddRange(["UTF-8", "Shift_JIS（CP932）"]);
         encoding.SelectedIndex = current.FaceEncoding == Face.FaceXmlEncoding.Utf8 ? 0 : 1; layout.Controls.Add(encoding);
-        var arrived = new CheckBox { Text = "予約番号取得後に「来院確認」を操作する", AutoSize = true, Checked = current.MarkArrived };
-        var link = new CheckBox { Text = "予約番号取得後に「連携」を操作する", AutoSize = true, Checked = current.LinkReservation };
-        layout.Controls.Add(arrived); layout.Controls.Add(link);
-        layout.Controls.Add(new Label { AutoSize = true, Text = "変更は次回監視開始後、新しく取り込むXMLに適用します。保存済み要求の設定は維持します。\r\niCallManager側の「実操作を有効化」も必要です。自動取込はファイル名の日付が当日のXMLです。" });
+
+        layout.Controls.Add(new Label { AutoSize = true, Text = "XML取得・患者照合・予約検索は自動です。来院確認・連携・照会番号登録は一覧から手動で要求します。\r\niCallManager側の「実操作を有効化」も必要です。自動取込はファイル名の日付が当日のXMLです。" });
         var buttons = new FlowLayoutPanel { AutoSize = true, Dock = DockStyle.Top, FlowDirection = FlowDirection.RightToLeft };
         var cancel = new Button { Text = "キャンセル", DialogResult = DialogResult.Cancel, AutoSize = true };
         var save = new Button { Text = "保存", AutoSize = true };
@@ -40,7 +38,7 @@ public sealed class AgentSettingsForm : Form
             try
             {
                 new AgentSettings { OqsRoot = oqs.Text, FaceXmlDirectory = face.Text, FaceTrashDirectory = trash.Text,
-                    ICallRequestDirectory = request.Text, ICallResponseDirectory = response.Text, MarkArrived = arrived.Checked, LinkReservation = link.Checked,
+                    ICallRequestDirectory = request.Text, ICallResponseDirectory = response.Text, MarkArrived = false, LinkReservation = false,
                     FaceEncoding = encoding.SelectedIndex == 0 ? Face.FaceXmlEncoding.Utf8 : Face.FaceXmlEncoding.ShiftJis }.Save(MainForm.DataDirectory);
                 DialogResult = DialogResult.OK;
             }

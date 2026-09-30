@@ -8,6 +8,7 @@ public sealed class UiNode
     public int Key { get; init; }
     public string Name { get; init; } = "";
     public string AutomationId { get; init; } = "";
+    public string Value { get; init; } = "";
     public string HelpText { get; init; } = "";
     public string Framework { get; init; } = "";
     public int ControlType { get; init; }
@@ -19,7 +20,10 @@ public sealed class UiNode
 
 // Container is the real row when exposed, otherwise the real table. Cells always belong to this patient only.
 public sealed record ParsedRow(Reservation Reservation, UiNode Container, IReadOnlyList<UiNode> Cells,
-    UiNode? Arrival, UiNode? Link);
+    UiNode? Arrival, UiNode? Link)
+{
+    public UiNode? Assignment { get; init; }
+}
 
 public static class RowParser
 {
@@ -55,6 +59,7 @@ public static class RowParser
             var rows = InsideTable(table).Where(IsRow).ToList();
             var cells = rows.Select(Cells).ToList();
             int reception = settings.ReceptionNoColumn, patient = settings.PatientIdColumn, name = settings.PatientNameColumn;
+            int waitingOrderColumn = -1;
             var headerIndexes = new HashSet<int>();
             for (int i = 0; i < cells.Count; i++)
             {
@@ -64,6 +69,7 @@ public static class RowParser
                 int n = labels.FindIndex(t => t is "患者名" or "氏名" or "名前" or "おなまえ");
                 if (r >= 0 && p >= 0 && n >= 0)
                 {
+                    waitingOrderColumn = labels.FindIndex(t => t == "待ち順");
                     headerIndexes.Add(i);
                     if (reception < 0) reception = r;
                     if (patient < 0) patient = p;
@@ -86,8 +92,10 @@ public static class RowParser
                 hasData = true;
                 var buttons = rows[i].Descendants().Where(n => n.ControlType == 50000).ToList();
                 var arrivals = buttons.Where(n => n.Name == "来院確認").ToArray();
+                var assignments = buttons.Where(n => n.Name == "患者割当").ToArray();
                 var links = buttons.Where(n => Regex.IsMatch(n.AutomationId, @"^chk\d+$")).ToArray();
-                if (arrivals.Length > 1 || links.Length > 1) { invalid = true; continue; }
+                if (arrivals.Length > 1 || assignments.Length > 1 || links.Length > 1) { invalid = true; continue; }
+                var assignment = assignments.SingleOrDefault();
                 var arrival = arrivals.SingleOrDefault();
                 var link = links.SingleOrDefault();
                 // HelpText, when exposed, must agree with the name cell.
@@ -96,7 +104,10 @@ public static class RowParser
                 bool identified = id != "-" && patientName != "-";
                 parsed.Add(new(new(no, id, patientName, link?.AutomationId[3..] ?? "",
                     identified && arrival?.Enabled == true, identified && link?.Enabled == true)
-                    { HasMarkArrivedButton = arrival != null, HasLinkButton = link != null }, rows[i], cells[i], arrival, link));
+                    { HasMarkArrivedButton = arrival != null, HasLinkButton = link != null,
+                      HasAssignmentButton = assignment != null, CanAssignDummy = id == "-" && patientName == "-" && assignment?.Enabled == true,
+                      WaitingOrder = waitingOrderColumn >= 0 && int.TryParse(CellText(cells[i][waitingOrderColumn]), out int order) ? order : null },
+                    rows[i], cells[i], arrival, link) { Assignment = assignment });
             }
             if (hasData || headerIndexes.Count > 0)
             {
@@ -152,14 +163,17 @@ public static class RowParser
 
             var buttons = cells.SelectMany(c => c.Descendants()).Where(n => n.ControlType == 50000).ToList();
             var arrivals = buttons.Where(n => n.Name == "来院確認").ToArray();
-            var links = buttons.Where(n => Regex.IsMatch(n.AutomationId, @"\Achk[0-9]+\z")).ToArray();
+            var assignments = buttons.Where(n => n.Name == "患者割当").ToArray();
+                var links = buttons.Where(n => Regex.IsMatch(n.AutomationId, @"\Achk[0-9]+\z")).ToArray();
             var guides = buttons.Where(n => Regex.IsMatch(n.AutomationId, @"\Aguid01[0-9]+\z")).ToArray();
-            if (arrivals.Length > 1 || links.Length > 1 || guides.Length > 1 ||
+            if (arrivals.Length > 1 || assignments.Length > 1 || links.Length > 1 || guides.Length > 1 ||
                 arrivals.Any(n => !cells[13].Descendants().Contains(n)) ||
+                assignments.Any(n => !cells[13].Descendants().Contains(n)) ||
                 links.Any(n => !cells[11].Descendants().Contains(n)) ||
                 guides.Any(n => !cells[15].Descendants().Contains(n)))
                 throw FlatLayoutError("操作ボタンの列位置または個数が一致しません。");
-            var arrival = arrivals.SingleOrDefault();
+            var assignment = assignments.SingleOrDefault();
+                var arrival = arrivals.SingleOrDefault();
             var link = links.SingleOrDefault();
             var guide = guides.SingleOrDefault();
             string internalId = link?.AutomationId[3..] ?? guide?.AutomationId[6..] ?? "";
@@ -170,7 +184,9 @@ public static class RowParser
             bool identified = !string.IsNullOrWhiteSpace(id) && id != "-" && !string.IsNullOrWhiteSpace(name) && name != "-";
             result.Add(new(new(no, id, name, internalId, identified && arrival?.Enabled == true,
                 identified && link?.Enabled == true)
-                { HasMarkArrivedButton = arrival != null, HasLinkButton = link != null }, table, cells, arrival, link));
+                { HasMarkArrivedButton = arrival != null, HasLinkButton = link != null,
+                  HasAssignmentButton = assignment != null, CanAssignDummy = id == "-" && (name == "-" || string.IsNullOrWhiteSpace(name)) && assignment?.Enabled == true,
+                  WaitingOrder = int.Parse(CellText(cells[0])) }, table, cells, arrival, link) { Assignment = assignment });
         }
         if (result.Select(r => r.Reservation.ReceptionNo).Distinct().Count() != result.Count ||
             result.Where(r => r.Reservation.InternalId.Length > 0).GroupBy(r => r.Reservation.InternalId).Any(g => g.Count() > 1))

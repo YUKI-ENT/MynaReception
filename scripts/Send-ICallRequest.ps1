@@ -1,6 +1,6 @@
 <#
 .SYNOPSIS
-Send a find/arrived/link request to the iCallManager SMB JSON bridge.
+Send a find/arrived/link/assign request to the iCallManager SMB JSON bridge.
 .EXAMPLE
 .\Send-ICallRequest.ps1 -PatientId '00011'
 .EXAMPLE
@@ -11,11 +11,12 @@ param(
     [Parameter(Mandatory = $true)]
     [ValidateNotNullOrEmpty()]
     [string]$PatientId,
-    [ValidateSet('find', 'arrived', 'link')]
+    [ValidateSet('find', 'arrived', 'link', 'assign')]
     [string]$Action = 'find',
     [string]$BridgeDirectory = '',
+    [string]$ExpectedReceptionNo = '',
     [ValidateRange(1, 300)]
-    [int]$TimeoutSeconds = 30
+    [int]$TimeoutSeconds = 60
 )
 
 $ErrorActionPreference = 'Stop'
@@ -46,7 +47,10 @@ function Send-BridgeCommand([string]$Command, $Reservation) {
         action = $Command
         patientId = $PatientId
     }
-    if ($Command -ne 'find') {
+    if ($Command -eq 'assign') {
+        if (![string]::IsNullOrWhiteSpace($ExpectedReceptionNo)) { $request.expectedReceptionNo = $ExpectedReceptionNo }
+    }
+    elseif ($Command -ne 'find') {
         $request.expectedReceptionNo = [string]$Reservation.receptionNo
         $request.expectedPatientName = [string]$Reservation.patientName
     }
@@ -77,6 +81,10 @@ function Send-BridgeCommand([string]$Command, $Reservation) {
     throw "Timed out. The request was NOT cancelled. Check $responsePath before running another operation."
 }
 
+if ($Action -eq 'assign') {
+    if ($PatientId -notmatch '\A[0-9]{1,50}\z') { throw 'Assign requires a numeric chart number without a Dynamics branch digit.' }
+    return Send-BridgeCommand 'assign' $null
+}
 $found = Send-BridgeCommand 'find' $null
 if ($Action -eq 'find' -or $found.success -ne $true) { return $found }
 if ($found.code -ne 'found' -or [string]::IsNullOrWhiteSpace($found.receptionNo) -or

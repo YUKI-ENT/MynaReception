@@ -26,6 +26,7 @@ public sealed class CaptureRecord
     public string ResponseDirectory { get; set; } = "";
     public bool MarkArrived { get; set; }
     public bool LinkReservation { get; set; }
+    public bool ManualOperationRequested { get; set; }
     public ICallRequest? PendingRequest { get; set; }
     public string ReceptionNo { get; set; } = "";
     public string ReservationPatientName { get; set; } = "";

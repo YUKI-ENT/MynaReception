@@ -1,3 +1,7 @@
+# ダミー枠の患者割当について
+
+ファイルAPIの action=assign を追加しました。要求例・応答・実機テスト方法は [患者割当API](iCallManager_DummyAssignment.md) を参照してください。
+
 # iCallManager の起動・SMB連携
 
 今回の対象はiCallManagerのみです。ReceptionAgent、Kiosk、OQS、Dynamics本体の実装やネットワーク設定変更は含みません。

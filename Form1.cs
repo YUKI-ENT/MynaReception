@@ -75,7 +75,7 @@ public partial class Form1 : Form
         grid.SelectionMode = DataGridViewSelectionMode.FullRowSelect;
         grid.AutoGenerateColumns = false;
         grid.AutoSizeColumnsMode = DataGridViewAutoSizeColumnsMode.Fill;
-        foreach (var (property, label) in new[] { ("ReceptionNo", "受付番号"), ("PatientId", "患者ID"), ("PatientName", "患者名"), ("InternalId", "内部ID"), ("HasMarkArrivedButton", "来院ボタン有"), ("HasLinkButton", "連携ボタン有"), ("OperationRestriction", "操作制限") })
+        foreach (var (property, label) in new[] { ("ReceptionNo", "受付番号"), ("PatientId", "患者ID"), ("PatientName", "患者名"), ("InternalId", "内部ID"), ("HasMarkArrivedButton", "来院ボタン有"), ("HasLinkButton", "連携ボタン有"), ("HasAssignmentButton", "患者割当ボタン有"), ("CanAssignDummy", "ダミー割当可"), ("OperationRestriction", "操作制限") })
             grid.Columns.Add(new DataGridViewTextBoxColumn { DataPropertyName = property, HeaderText = label });
         logBox.Dock = DockStyle.Fill;
         logBox.Multiline = true;

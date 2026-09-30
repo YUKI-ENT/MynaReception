@@ -80,7 +80,7 @@ public sealed class FaceCaptureMonitor(CaptureStore store, AgentSettings setting
                     return store.Capture(new CaptureRecord { FileName = Path.GetFileName(path), ContentHash = Convert.ToHexString(SHA256.HashData(bytes)),
                         SourcePath = actual, GeneratedAt = generatedAt, FileCreatedAt = new DateTimeOffset(created), Encoding = settings.FaceEncoding,
                         Face = face, XmlPatientName = face?.PatientName ?? "", RequestDirectory = settings.ICallRequestDirectory, ResponseDirectory = settings.ICallResponseDirectory,
-                        MarkArrived = settings.MarkArrived, LinkReservation = settings.LinkReservation,
+                        MarkArrived = false, LinkReservation = false,
                         Stage = error is null ? CaptureStage.Captured : CaptureStage.NeedsReview, Status = error ?? "XML取得済み" }, bytes);
                 }
                 previous = bytes;
@@ -99,7 +99,7 @@ public sealed class FaceCaptureMonitor(CaptureStore store, AgentSettings setting
             foreach (var record in store.List(true).Where(r => r.RetryAfter <= DateTimeOffset.Now))
             {
                 token.ThrowIfCancellationRequested();
-                try { await workflow.StepAsync(record, token); }
+                try { await workflow.StepByIdAsync(record.Id, token); }
                 catch (InvalidDataException) { /* Concurrent capture detected conflicting file content; keep it halted. */ }
             }
             await Task.Delay(200, token);

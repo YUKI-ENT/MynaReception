@@ -33,6 +33,11 @@ public sealed class OqsFileClient(string root, TimeSpan? timeout = null)
     {
         ValidateName(requestName);
         string path = Path.Combine(root, "res", requestName.Replace("req_", "res_"));
+        using var watcher = new FileSystemWatcher(Path.Combine(root, "res"), Path.GetFileName(path));
+        using var wake = new SemaphoreSlim(0, 1);
+        void Wake(object sender, FileSystemEventArgs e) { try { wake.Release(); } catch (SemaphoreFullException) { } catch (ObjectDisposedException) { } }
+        watcher.Created += Wake; watcher.Changed += Wake; watcher.Renamed += Wake;
+        watcher.EnableRaisingEvents = true;
         var watch = Stopwatch.StartNew();
         byte[]? previous = null;
         while (watch.Elapsed < (timeout ?? TimeSpan.FromMinutes(3)))
@@ -58,13 +63,13 @@ public sealed class OqsFileClient(string root, TimeSpan? timeout = null)
             }
             catch (IOException) { previous = null; }
             catch (XmlException) { previous = null; }
-            await Task.Delay(300, token).ConfigureAwait(false);
+            await wake.WaitAsync(TimeSpan.FromMilliseconds(300), token).ConfigureAwait(false);
         }
         throw new TimeoutException("応答待ちを一時停止しました。送信済み要求は再送せず、再開時に同じ応答を確認します。");
     }
     private static void ValidateName(string name)
     {
-        if (!System.Text.RegularExpressions.Regex.IsMatch(name, @"\AOQSmuimm0[12]req_[0-9]{12}\.xml\z"))
+        if (!System.Text.RegularExpressions.Regex.IsMatch(name, @"\AOQS(?:muimm0[12]|siimm01)req_[0-9]{12}\.xml\z"))
             throw new ArgumentException("要求ファイル名が不正です。");
     }
 }

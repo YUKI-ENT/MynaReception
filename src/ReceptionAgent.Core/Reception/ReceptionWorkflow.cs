@@ -7,6 +7,41 @@ public sealed class ReceptionWorkflow(CaptureStore store, Func<FaceIdentity, Can
 {
     public async Task StepAsync(CaptureRecord record, CancellationToken token)
     {
+        await store.WorkflowGate.WaitAsync(token);
+        try { await StepCoreAsync(record, token); }
+        finally { store.WorkflowGate.Release(); }
+    }
+    public async Task StepByIdAsync(string id, CancellationToken token)
+    {
+        await store.WorkflowGate.WaitAsync(token);
+        try { await StepCoreAsync(store.Get(id), token); }
+        finally { store.WorkflowGate.Release(); }
+    }
+    public async Task QueueManualAsync(string id, string action, CancellationToken token)
+    {
+        if (action is not ("arrived" or "link")) throw new ArgumentException("操作が不正です。");
+        await store.WorkflowGate.WaitAsync(token);
+        try
+        {
+            var record = store.Get(id);
+            if (record.Conflict || record.GeneratedAt.Date != DateTime.Today || record.Lookup?.Selected is null ||
+                string.IsNullOrWhiteSpace(record.ReceptionNo) || string.IsNullOrWhiteSpace(record.ReservationPatientName))
+                throw new InvalidDataException("当日分の患者・予約が特定済みの行を選択してください。");
+            if (record.PendingRequest is not null)
+            {
+                if (record.PendingRequest.Action == action && record.Stage is CaptureStage.ArrivedWaiting or CaptureStage.LinkWaiting) return;
+                throw new InvalidDataException("別の要求が未完了です。結果を確認してください。");
+            }
+            if (record.Stage != CaptureStage.Completed || record.Responses.Any(r => r.RequestId == "ra-" + record.Id + "-" + action))
+                throw new InvalidDataException("未完了、または操作結果が記録済みです。重複要求は行いません。");
+            Prepare(record, action, action == "arrived" ? CaptureStage.ArrivedWaiting : CaptureStage.LinkWaiting);
+            record.RetryAfter = default; record.ManualOperationRequested = true;
+            store.Save(record);
+        }
+        finally { store.WorkflowGate.Release(); }
+    }
+    private async Task StepCoreAsync(CaptureRecord record, CancellationToken token)
+    {
         if (record.Conflict || record.Stage is CaptureStage.Completed or CaptureStage.NeedsReview) return;
         try
         {
@@ -25,17 +60,17 @@ public sealed class ReceptionWorkflow(CaptureStore store, Func<FaceIdentity, Can
                 case CaptureStage.PatientIdentified:
                     Prepare(record, "find", CaptureStage.FindWaiting); break;
                 case CaptureStage.ReservationFound:
-                    if (record.MarkArrived) Prepare(record, "arrived", CaptureStage.ArrivedWaiting);
-                    else { record.Stage = CaptureStage.LinkReady; record.Status = "来院確認は設定OFF"; }
+                    Complete(record);
                     break;
                 case CaptureStage.LinkReady:
-                    if (record.LinkReservation) Prepare(record, "link", CaptureStage.LinkWaiting);
-                    else Complete(record);
+                    Complete(record);
                     break;
                 case CaptureStage.FindWaiting:
                 case CaptureStage.ArrivedWaiting:
                 case CaptureStage.LinkWaiting:
                     var request = record.PendingRequest ?? throw new InvalidDataException("保存済み要求がありません。");
+                    if (request.Action is "arrived" or "link" && !record.ManualOperationRequested)
+                        throw new InvalidDataException("旧設定による自動操作要求を停止しました。iCallManager側の処理結果を確認してください。");
                     // The request was committed in the preceding step, before any external write.
                     var response = await new ICallFileClient().SendAsync(request, record.RequestDirectory, record.ResponseDirectory, TimeSpan.FromSeconds(2), token);
                     record.Responses.Add(response);
@@ -52,10 +87,9 @@ public sealed class ReceptionWorkflow(CaptureStore store, Func<FaceIdentity, Can
                     else
                     {
                         if (response.Code != "invoked") throw new InvalidDataException("操作応答の内容を確認してください。");
-                        if (request.Action == "arrived") { record.Stage = CaptureStage.LinkReady; record.Status = "来院確認の操作送信済み"; }
-                        else Complete(record);
+                        Complete(record);
                     }
-                    record.PendingRequest = null;
+                    record.PendingRequest = null; record.ManualOperationRequested = false;
                     break;
             }
             record.RetryAfter = default;
@@ -74,5 +108,5 @@ public sealed class ReceptionWorkflow(CaptureStore store, Func<FaceIdentity, Can
         record.Stage = stage; record.Status = "iCall " + action + " 応答待ち";
     }
     private static void Complete(CaptureRecord record)
-    { record.Stage = CaptureStage.Completed; record.Status = "予約番号取得完了" + (record.MarkArrived || record.LinkReservation ? "／設定したボタンの操作送信済み" : ""); }
+    { record.Stage = CaptureStage.Completed; record.Status = "予約番号取得完了／来院確認・連携は手動操作"; }
 }

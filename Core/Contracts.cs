@@ -3,6 +3,10 @@ namespace iCallManager.Core;
 public sealed record Reservation(string ReceptionNo, string PatientId, string PatientName,
     string InternalId, bool CanMarkArrived, bool CanLink)
 {
+    public int? WaitingOrder { get; init; }
+    public bool HasAssignmentButton { get; init; }
+    public bool CanAssignDummy { get; init; }
+    public bool IsUnassignedDummy => PatientId == "-" && (string.IsNullOrWhiteSpace(PatientName) || PatientName == "-") && HasAssignmentButton;
     public bool HasMarkArrivedButton { get; init; }
     public bool HasLinkButton { get; init; }
     public bool HasPatientIdentity => !string.IsNullOrWhiteSpace(PatientId) && PatientId != "-" &&
@@ -34,6 +38,8 @@ public interface IReservationAdapter : IDisposable
     IReadOnlyList<Reservation> Read();
     // Must resolve the row again and verify the complete identity before invoking.
     void Invoke(Reservation expected, string action, Func<bool> mayInvoke);
+    Reservation AssignDummy(Reservation expected, string patientId, Func<bool> mayOperate) =>
+        throw new BridgeException("assignment_unavailable", "患者割当が未対応です。");
     string Diagnose();
 }
 

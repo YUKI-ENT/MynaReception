@@ -200,6 +200,7 @@ using (var bridge = new FileBridge(share, state, Execute, _ => { }))
     try { await client.SendAsync(timeoutRequest, TimeSpan.FromMilliseconds(50)); Check(false, "client timeout"); }
     catch (TimeoutException) { Check(File.Exists(Path.Combine(share, "request", "client-timeout.json")), "timeout preserves submitted request"); }
 }
+await AssignmentTests.Run(Check);
 Console.WriteLine($"All {checks} checks passed. Synthetic test files: {testRoot}");
 
 sealed class FakeAdapter : IReservationAdapter
