@@ -109,7 +109,7 @@ public sealed class FileBridge : IDisposable
         WriteAtomic(journalPath, new Journal(fingerprint, response));
         WriteAtomic(Path.Combine(responseDirectory, id + ".json"), response);
         File.Delete(path);
-        log($"要求 {id}: {response.Code}");
+        log($"要求 {id}: {response.Code} — {response.Message}");
     }
 
     private static BridgeResponse Response(BridgeRequest request, OperationResult result) =>
