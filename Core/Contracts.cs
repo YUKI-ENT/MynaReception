@@ -9,6 +9,7 @@ public sealed record Reservation(string ReceptionNo, string PatientId, string Pa
     public bool IsUnassignedDummy => PatientId == "-" && (string.IsNullOrWhiteSpace(PatientName) || PatientName == "-") && HasAssignmentButton;
     public bool HasMarkArrivedButton { get; init; }
     public bool HasLinkButton { get; init; }
+    public string? LinkButtonName { get; init; }
     public bool HasPatientIdentity => !string.IsNullOrWhiteSpace(PatientId) && PatientId != "-" &&
         !string.IsNullOrWhiteSpace(PatientName) && PatientName != "-";
     public string OperationRestriction => string.IsNullOrWhiteSpace(PatientId) || PatientId == "-"

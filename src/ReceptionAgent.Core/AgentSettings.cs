@@ -9,6 +9,7 @@ public sealed class AgentSettings
     public string FaceTrashDirectory { get; set; } = "";
     public string ICallRequestDirectory { get; set; } = "";
     public string ICallResponseDirectory { get; set; } = "";
+    public bool AutoRegisterReferenceNumber { get; set; }
     public bool MarkArrived { get; set; }
     public bool LinkReservation { get; set; }
     public Face.FaceXmlEncoding FaceEncoding { get; set; } = Face.FaceXmlEncoding.Utf8;
@@ -21,6 +22,7 @@ public sealed class AgentSettings
     public void Save(string directory)
     {
         string normalized = string.IsNullOrWhiteSpace(OqsRoot) ? "" : NormalizeRoot(OqsRoot);
+        if (AutoRegisterReferenceNumber && normalized.Length == 0) throw new ArgumentException("自動照会番号登録にはOQS連携フォルダーを指定してください。");
         string faceDirectory = string.IsNullOrWhiteSpace(FaceXmlDirectory) ? "" : NormalizeRoot(FaceXmlDirectory);
         string OptionalPath(string value) => string.IsNullOrWhiteSpace(value) ? "" : NormalizeRoot(value);
         string trash = OptionalPath(FaceTrashDirectory), request = OptionalPath(ICallRequestDirectory), response = OptionalPath(ICallResponseDirectory);
@@ -32,7 +34,7 @@ public sealed class AgentSettings
         {
             using (var stream = new FileStream(temp, FileMode.CreateNew, FileAccess.Write, FileShare.None))
             { JsonSerializer.Serialize(stream, new AgentSettings { OqsRoot = normalized, FaceXmlDirectory = faceDirectory, FaceEncoding = FaceEncoding,
-                FaceTrashDirectory = trash, ICallRequestDirectory = request, ICallResponseDirectory = response, MarkArrived = MarkArrived, LinkReservation = LinkReservation }, new JsonSerializerOptions { WriteIndented = true }); stream.Flush(true); }
+                AutoRegisterReferenceNumber = AutoRegisterReferenceNumber, FaceTrashDirectory = trash, ICallRequestDirectory = request, ICallResponseDirectory = response, MarkArrived = MarkArrived, LinkReservation = LinkReservation }, new JsonSerializerOptions { WriteIndented = true }); stream.Flush(true); }
             File.Move(temp, path, true); OqsRoot = normalized; FaceXmlDirectory = faceDirectory;
             FaceTrashDirectory = trash; ICallRequestDirectory = request; ICallResponseDirectory = response;
         }
@@ -47,6 +49,7 @@ public sealed class AgentSettings
     }
     public void ValidateMonitoring()
     {
+        if (AutoRegisterReferenceNumber) new Oqs.OqsFileClient(NormalizeRoot(OqsRoot)).ValidateFolders();
         NormalizeRoot(FaceXmlDirectory); NormalizeRoot(FaceTrashDirectory);
         NormalizeRoot(ICallRequestDirectory); NormalizeRoot(ICallResponseDirectory);
         if (string.Equals(NormalizeRoot(ICallRequestDirectory), NormalizeRoot(ICallResponseDirectory), StringComparison.OrdinalIgnoreCase))

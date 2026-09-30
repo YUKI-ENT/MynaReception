@@ -29,7 +29,11 @@ public sealed class AgentSettingsForm : Form
         encoding.Items.AddRange(["UTF-8", "Shift_JIS（CP932）"]);
         encoding.SelectedIndex = current.FaceEncoding == Face.FaceXmlEncoding.Utf8 ? 0 : 1; layout.Controls.Add(encoding);
 
-        layout.Controls.Add(new Label { AutoSize = true, Text = "XML取得・患者照合・予約検索は自動です。来院確認・連携・照会番号登録は一覧から手動で要求します。\r\niCallManager側の「実操作を有効化」も必要です。自動取込はファイル名の日付が当日のXMLです。" });
+        var autoRegister = new CheckBox { AutoSize = true, Checked = current.AutoRegisterReferenceNumber,
+            Text = "Dynamicsでカルテ番号を取得した場合、照会番号を自動登録する" };
+        layout.Controls.Add(autoRegister);
+        layout.Controls.Add(new Label { AutoSize = true, Text = "設定変更は次回監視開始後に取り込むXMLへ適用します。登録結果は一覧で確認できます。" });
+        layout.Controls.Add(new Label { AutoSize = true, Text = "XML取得・患者照合・予約検索は自動です。来院確認・連携は一覧から手動で要求します。照会番号登録は手動、または上記設定で自動です。\r\niCallManager側の「実操作を有効化」も必要です。自動取込はファイル名の日付が当日のXMLです。" });
         var buttons = new FlowLayoutPanel { AutoSize = true, Dock = DockStyle.Top, FlowDirection = FlowDirection.RightToLeft };
         var cancel = new Button { Text = "キャンセル", DialogResult = DialogResult.Cancel, AutoSize = true };
         var save = new Button { Text = "保存", AutoSize = true };
@@ -38,7 +42,7 @@ public sealed class AgentSettingsForm : Form
             try
             {
                 new AgentSettings { OqsRoot = oqs.Text, FaceXmlDirectory = face.Text, FaceTrashDirectory = trash.Text,
-                    ICallRequestDirectory = request.Text, ICallResponseDirectory = response.Text, MarkArrived = false, LinkReservation = false,
+                    AutoRegisterReferenceNumber = autoRegister.Checked, ICallRequestDirectory = request.Text, ICallResponseDirectory = response.Text, MarkArrived = false, LinkReservation = false,
                     FaceEncoding = encoding.SelectedIndex == 0 ? Face.FaceXmlEncoding.Utf8 : Face.FaceXmlEncoding.ShiftJis }.Save(MainForm.DataDirectory);
                 DialogResult = DialogResult.OK;
             }

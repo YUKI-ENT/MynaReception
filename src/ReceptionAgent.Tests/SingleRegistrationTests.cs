@@ -36,12 +36,35 @@ internal static class SingleRegistrationTests
             new XElement("MessageBody", new XElement("ReferenceNumber", j.Target.ReferenceNumber),
                 new XElement("ProcessingResultStatus", status), new XElement("ProcessingResultCode", "TEST"),
                 new XElement("ProcessingResultMessage", "模擬結果"))));
+        // Real OQS response structure reported on 2026-09-30; all patient/insurance values remain synthetic.
+        XDocument ServerResponse(SingleReferenceRegistrationJob j) => new(new XDeclaration("1.0", "UTF-8", "no"),
+            new XElement("XmlMsg",
+                new XElement("MessageHeader",
+                    new XElement("ProcessExecutionTime", "20260930221234"),
+                    new XElement("CharacterCodeIdentifier", "0"),
+                    new XElement("SegmentOfResult", "1"),
+                    new XElement("ArbitraryFileIdentifier", j.Identifier),
+                    new XElement("MedicalInstitutionCode", j.InstitutionCode)),
+                new XElement("MessageBody",
+                    new XElement("ReferenceNumberRegistrationInfo",
+                        new XElement("InsurerNumber", j.Target.InsurerNumber),
+                        new XElement("InsuredIdentificationNumber", j.Target.InsuredIdentificationNumber),
+                        new XElement("ReferenceNumber", j.Target.ReferenceNumber),
+                        new XElement("InsuredCardSymbol", j.Target.InsuredCardSymbol),
+                        new XElement("InsuredBranchNumber", j.Target.InsuredBranchNumber)),
+                    new XElement("ProcessingResultStatus", "1"))));
         // Simulate OQS consuming req; restarting must still only read its corresponding res.
         File.Delete(Path.Combine(root, "req", job.RequestFileName));
-        await File.WriteAllTextAsync(Path.Combine(root, "res", job.ResponseFileName), Response(job).ToString(), Encoding.UTF8);
+        await File.WriteAllTextAsync(Path.Combine(root, "res", job.ResponseFileName), ServerResponse(job).Declaration + ServerResponse(job).ToString(), Encoding.UTF8);
         var resumed = await new SingleReferenceRegistrationService(jobs).RegisterAsync(record, "unused-changed-root", default);
-        check(resumed.State == ReferenceRegistrationState.Completed && resumed.ProcessingResultMessage == "模擬結果" &&
+        check(resumed.State == ReferenceRegistrationState.Completed && resumed.ProcessingResultStatus == "1" && resumed.ProcessingResultCode == "" && resumed.ProcessingResultMessage == "" &&
             !Directory.GetFiles(Path.Combine(root, "req")).Any(), "restart reads existing response using saved root without resubmission");
+        check(resumed.SegmentOfResult == "1" && resumed.ErrorCode == "" && resumed.Message == "照会番号登録完了",
+            "actual server layout: nested reference info and absent optional result code/message register successfully");
+        var mismatchedServer = ServerResponse(job);
+        mismatchedServer.Descendants("ReferenceNumber").Single().Value = "99999";
+        try { SingleReferenceRegistrationService.ParseResult(mismatchedServer, job); check(false, "nested server reference mismatch"); }
+        catch (InvalidDataException) { check(true, "actual nested server layout still verifies returned patient reference"); }
         check((await service.RegisterAsync(record, root, default)).State == ReferenceRegistrationState.Completed, "completed registration is idempotent");
         var error = Response(job, "2"); SingleReferenceRegistrationService.ParseResult(error, job);
         check(job.State == ReferenceRegistrationState.Failed, "single status 2 is failure");
@@ -71,6 +94,30 @@ internal static class SingleRegistrationTests
         check(!XDocument.Load(optionalStream).Descendants("InsuredBranchNumber").Any(), "single optional branch omitted without fabrication");
         var faceXml = Encoding.UTF8.GetBytes("<XmlMsg><MessageHeader><MedicalInstitutionCode>0110012345</MedicalInstitutionCode><SegmentOfResult>1</SegmentOfResult></MessageHeader><MessageBody><ProcessingResultStatus>1</ProcessingResultStatus><ResultList><ResultOfQualificationConfirmation><NameKana>テスト</NameKana><Birthdate>20000101</Birthdate><ReferenceNumber>24434</ReferenceNumber></ResultOfQualificationConfirmation></ResultList></MessageBody></XmlMsg>");
         check(FaceXmlParser.Parse(faceXml, FaceXmlEncoding.Utf8).ReferenceNumber == "24434", "face parser preserves existing reference number");
+        foreach (string status in new[] { "1", "2" })
+        {
+            var lateRecord = new CaptureRecord { Face = record.Face, Lookup = new([patient], patient, false, "一致") };
+            try { await service.RegisterAsync(lateRecord, root, default); check(false, "late response initial timeout"); }
+            catch (TimeoutException) { check(true, "late response starts from persisted waiting job"); }
+            var pending = service.Load(lateRecord.Id)!;
+            var lateXml = ServerResponse(pending);
+            lateXml.Descendants("ProcessingResultStatus").Single().Value = status;
+            if (status == "2") lateXml.Root!.Element("MessageBody")!.Add(new XElement("ProcessingResultCode", "E-SYNTH"),
+                new XElement("ProcessingResultMessage", "模擬登録エラー"));
+            await File.WriteAllTextAsync(Path.Combine(root, "res", pending.ResponseFileName), lateXml.ToString(), Encoding.UTF8);
+            File.Delete(Path.Combine(root, "req", pending.RequestFileName));
+            var refreshService = new SingleReferenceRegistrationService(jobs);
+            await refreshService.RefreshResultsAsync(default);
+            var received = refreshService.Load(lateRecord.Id)!;
+            check(received.State == (status == "1" ? ReferenceRegistrationState.Completed : ReferenceRegistrationState.Failed) &&
+                received.ProcessingResultStatus == status && !File.Exists(Path.Combine(root, "req", pending.RequestFileName)),
+                "automatic late result refresh persists success/failure without resubmission: " + status);
+            if (status == "2") check(received.ProcessingResultCode == "E-SYNTH" && received.Message.Contains("模擬登録エラー"),
+                "failed response preserves result code and message for grid detail");
+            var terminalTime = received.UpdatedAt;
+            await refreshService.RefreshResultsAsync(default);
+            check(refreshService.Load(lateRecord.Id)!.UpdatedAt == terminalTime, "automatic refresh leaves terminal registration unchanged");
+        }
         check(record.Stage == CaptureStage.Captured && record.ReceptionNo == "", "registration is independent of reception state");
     }
 }

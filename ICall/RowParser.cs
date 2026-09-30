@@ -104,7 +104,7 @@ public static class RowParser
                 bool identified = id != "-" && patientName != "-";
                 parsed.Add(new(new(no, id, patientName, link?.AutomationId[3..] ?? "",
                     identified && arrival?.Enabled == true, identified && link?.Enabled == true)
-                    { HasMarkArrivedButton = arrival != null, HasLinkButton = link != null,
+                    { HasMarkArrivedButton = arrival != null, HasLinkButton = link != null, LinkButtonName = link?.Name,
                       HasAssignmentButton = assignment != null, CanAssignDummy = id == "-" && patientName == "-" && assignment?.Enabled == true,
                       WaitingOrder = waitingOrderColumn >= 0 && int.TryParse(CellText(cells[i][waitingOrderColumn]), out int order) ? order : null },
                     rows[i], cells[i], arrival, link) { Assignment = assignment });
@@ -184,7 +184,7 @@ public static class RowParser
             bool identified = !string.IsNullOrWhiteSpace(id) && id != "-" && !string.IsNullOrWhiteSpace(name) && name != "-";
             result.Add(new(new(no, id, name, internalId, identified && arrival?.Enabled == true,
                 identified && link?.Enabled == true)
-                { HasMarkArrivedButton = arrival != null, HasLinkButton = link != null,
+                { HasMarkArrivedButton = arrival != null, HasLinkButton = link != null, LinkButtonName = link?.Name,
                   HasAssignmentButton = assignment != null, CanAssignDummy = id == "-" && (name == "-" || string.IsNullOrWhiteSpace(name)) && assignment?.Enabled == true,
                   WaitingOrder = int.Parse(CellText(cells[0])) }, table, cells, arrival, link) { Assignment = assignment });
         }

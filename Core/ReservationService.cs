@@ -89,6 +89,7 @@ public sealed class ReservationService : IDisposable
                 return new(false, "identity_changed", "find結果の受付番号・患者名と一致しません。再確認してください。");
             if (!operationsEnabled) return new(false, "operations_disabled", "実操作が無効になりました。");
             if (request.Action == "print") return printer.Print(row);
+            if (request.Action == "link") return EnsureLinked(row);
             if (request.Action == "arrived" && !row.CanMarkArrived || request.Action == "link" && !row.CanLink)
                 return new(false, "action_unavailable", "対象ボタンがありません、または操作できません。実行済みとは断定しません。", row);
             try { adapter!.Invoke(row, request.Action, () => operationsEnabled); }
@@ -104,6 +105,41 @@ public sealed class ReservationService : IDisposable
         }
         catch (BridgeException ex) { return new(false, ex.Code, ex.Message); }
         catch { return new(false, "automation_unavailable", "iCallの読取に失敗しました。ログイン状態・表示画面を確認してください。"); }
+    }
+
+    private OperationResult EnsureLinked(Reservation expected)
+    {
+        if (expected.LinkButtonName == "〆")
+            return new(true, "already_linked", "既に連携ONです。ボタンは押していません。", expected);
+        if (expected.LinkButtonName != "")
+            return new(false, "link_state_unverified", "連携ボタンの状態を確認できません。", expected);
+        if (!expected.CanLink)
+            return new(false, "action_unavailable", "連携ボタンを操作できません。", expected);
+        bool dispatched = false;
+        try
+        {
+            adapter!.Invoke(expected, "link", () => operationsEnabled);
+            dispatched = true;
+            var clock = System.Diagnostics.Stopwatch.StartNew();
+            do
+            {
+                var matches = Read().Where(r => r.PatientId == expected.PatientId).ToArray();
+                if (matches.Length != 1 || matches[0].ReceptionNo != expected.ReceptionNo ||
+                    matches[0].PatientName != expected.PatientName || matches[0].InternalId != expected.InternalId)
+                    break;
+                if (matches[0].LinkButtonName == "〆")
+                    return new(true, "linked", "連携ボタンのON（〆）を確認しました。", matches[0]);
+                Thread.Sleep(200);
+            } while (clock.Elapsed < TimeSpan.FromSeconds(8));
+        }
+        catch (BridgeException ex) when (!dispatched && ex.Code != "outcome_unknown")
+        {
+            Volatile.Write(ref snapshot, Snapshot with { IsCurrent = false, Status = "連携未完了・画面確認が必要" });
+            return new(false, ex.Code, ex.Message, expected);
+        }
+        catch { }
+        Volatile.Write(ref snapshot, Snapshot with { IsCurrent = false, Status = "連携結果不明・画面確認が必要" });
+        return new(false, "outcome_unknown", "連携ONを確認できません。自動で再押下せず、iCall画面を確認してください。", expected);
     }
 
     private OperationResult Assign(BridgeRequest request)

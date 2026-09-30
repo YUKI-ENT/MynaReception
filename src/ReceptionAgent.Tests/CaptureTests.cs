@@ -47,7 +47,7 @@ internal static class CaptureTests
         async Task Reply(CaptureRecord r, bool success = true, string? code = null)
         {
             var req = r.PendingRequest!;
-            var res = new iCallManager.Core.BridgeResponse(req.RequestId, success, code ?? (req.Action == "find" ? "found" : "invoked"), "synthetic response", req.PatientId, "7", "試験太郎", DateTimeOffset.Now, req.Fingerprint());
+            var res = new iCallManager.Core.BridgeResponse(req.RequestId, success, code ?? (req.Action == "find" ? "found" : req.Action == "link" ? "linked" : "invoked"), "synthetic response", req.PatientId, "7", "試験太郎", DateTimeOffset.Now, req.Fingerprint());
             await File.WriteAllTextAsync(Path.Combine(settings.ICallResponseDirectory, req.RequestId + ".json"), JsonSerializer.Serialize(res, iCallManager.Core.AppSettings.Json));
         }
         await Reply(record); record = store.List().Single();
@@ -85,8 +85,16 @@ internal static class CaptureTests
         await workflow.QueueManualAsync(second.Id, "link", default);
         second = store.Get(second.Id);
         await Reply(second); await workflow.StepByIdAsync(second.Id, default); second = store.Get(second.Id);
-        check(second.Responses.Select(r => r.Code).SequenceEqual(new[] { "found", "invoked", "invoked" }), "manual arrival and link results persist independently");
-        check(second.ArrivalResult.StartsWith("invoked") && second.LinkResult.StartsWith("invoked"), "operation dispatch distinguished in results");
+        check(second.Responses.Select(r => r.Code).SequenceEqual(new[] { "found", "invoked", "linked" }), "manual arrival and link results persist independently");
+        check(second.ArrivalResult.StartsWith("invoked") && second.LinkResult.StartsWith("linked"), "link ON confirmation distinguished from arrival dispatch");
+        var alreadyLinked = new CaptureRecord { FileName = Name("already-linked"), ContentHash = "already-linked", GeneratedAt = DateTime.Now,
+            Lookup = second.Lookup, ReceptionNo = "7", ReservationPatientName = "試験太郎",
+            RequestDirectory = settings.ICallRequestDirectory, ResponseDirectory = settings.ICallResponseDirectory,
+            Stage = CaptureStage.LinkWaiting, ManualOperationRequested = true };
+        alreadyLinked.PendingRequest = new("ra-" + alreadyLinked.Id + "-link", "link", "11", "7", "試験太郎");
+        store.Capture(alreadyLinked, Encoding.UTF8.GetBytes(sample));
+        await Reply(alreadyLinked, code: "already_linked"); await workflow.StepAsync(alreadyLinked, default);
+        check(alreadyLinked.Stage == CaptureStage.Completed && alreadyLinked.LinkResult.StartsWith("already_linked"), "already ON link response accepted without another operation");
         var legacy = new CaptureRecord { FileName = Name("legacy"), ContentHash = "legacy", GeneratedAt = DateTime.Now,
             Lookup = new([selected], selected, false, "一致"), ReceptionNo = "7", ReservationPatientName = "試験太郎",
             RequestDirectory = settings.ICallRequestDirectory, ResponseDirectory = settings.ICallResponseDirectory, Stage = CaptureStage.ArrivedWaiting };
@@ -114,6 +122,36 @@ internal static class CaptureTests
         try { await new ICallFileClient().SendAsync(badReq, settings.ICallRequestDirectory, settings.ICallResponseDirectory, TimeSpan.FromSeconds(1), default); check(false, "wrong patient response"); }
         catch (InvalidDataException) { check(true, "response for different patient rejected"); }
         check(FaceCaptureMonitor.TryTimestamp(fileName, out var timestamp) && timestamp.Date == DateTime.Today && !FaceCaptureMonitor.TryTimestamp("unrelated.xml", out _), "filename date parsed strictly");
+        int referenceLookupCalls = 0;
+        Task<FaceLookupResult> CountLookup(FaceIdentity face, CancellationToken token)
+        { referenceLookupCalls++; return Lookup(face, token); }
+        var referenceWorkflow = new ReceptionWorkflow(store, CountLookup);
+        CaptureRecord ReferenceRecord(string reference, string suffix)
+        {
+            var captured = new CaptureRecord { FileName = Name(suffix), ContentHash = suffix, GeneratedAt = DateTime.Now, Encoding = FaceXmlEncoding.Utf8,
+                RequestDirectory = settings.ICallRequestDirectory, ResponseDirectory = settings.ICallResponseDirectory };
+            string xml = sample.Replace("<InsurerNumber>", "<ReferenceNumber>" + reference + "</ReferenceNumber><InsurerNumber>");
+            store.Capture(captured, Encoding.UTF8.GetBytes(xml));
+            return captured;
+        }
+        var direct = ReferenceRecord(" 00011 ", "reference");
+        await referenceWorkflow.StepAsync(direct, default);
+        check(referenceLookupCalls == 0 && direct.Stage == CaptureStage.PatientIdentified &&
+            direct.Lookup?.Selected?.PatientId == "00011" && direct.Lookup.Selected.RawChartNumbers.Length == 0,
+            "face ReferenceNumber bypasses Dynamics lookup and preserves branch-free ID leading zeros");
+        await referenceWorkflow.StepAsync(direct, default);
+        check(direct.PendingRequest?.PatientId == "00011", "iCall find uses ReferenceNumber without chart-branch division");
+        await Reply(direct); await referenceWorkflow.StepAsync(direct, default); await referenceWorkflow.StepAsync(direct, default);
+        check(direct.Stage == CaptureStage.Completed && direct.ReceptionNo == "7" && referenceLookupCalls == 0,
+            "reference-based capture completes reservation lookup with no Dynamics call");
+        var invalidReference = ReferenceRecord("not-a-chart", "invalid-reference");
+        await referenceWorkflow.StepAsync(invalidReference, default);
+        check(invalidReference.Stage == CaptureStage.NeedsReview && invalidReference.PendingRequest is null && referenceLookupCalls == 0,
+            "invalid nonempty ReferenceNumber stops without falling back to another patient");
+        var emptyReference = ReferenceRecord(" ", "empty-reference");
+        await referenceWorkflow.StepAsync(emptyReference, default);
+        check(referenceLookupCalls == 1 && emptyReference.Lookup?.Selected?.PatientId == "11",
+            "empty ReferenceNumber retains Dynamics search fallback");
         // Exercise both background loops with a synthetic file-based iCallManager responder.
         string liveRoot = Path.Combine(root, "live");
         var live = new AgentSettings { FaceXmlDirectory = Path.Combine(liveRoot, "face"), FaceTrashDirectory = Path.Combine(liveRoot, "trash"), ICallRequestDirectory = Path.Combine(liveRoot, "req"), ICallResponseDirectory = Path.Combine(liveRoot, "res") };

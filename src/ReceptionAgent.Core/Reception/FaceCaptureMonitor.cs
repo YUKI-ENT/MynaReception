@@ -3,10 +3,11 @@ using System.Globalization;
 using System.Security.Cryptography;
 using System.Text.RegularExpressions;
 using ReceptionAgent.Face;
+using ReceptionAgent.Oqs.ReferenceNumber;
 
 namespace ReceptionAgent.Reception;
 
-public sealed class FaceCaptureMonitor(CaptureStore store, AgentSettings settings, Func<FaceIdentity, CancellationToken, Task<FaceLookupResult>> lookup)
+public sealed class FaceCaptureMonitor(CaptureStore store, AgentSettings settings, Func<FaceIdentity, CancellationToken, Task<FaceLookupResult>> lookup, SingleReferenceRegistrationService? registration = null)
 {
     private readonly ConcurrentDictionary<string, (long, DateTime)> seen = new(StringComparer.OrdinalIgnoreCase);
     public string CaptureStatus { get; private set; } = "監視開始";
@@ -17,7 +18,12 @@ public sealed class FaceCaptureMonitor(CaptureStore store, AgentSettings setting
         using var linked = CancellationTokenSource.CreateLinkedTokenSource(token);
         async Task Guard(Func<CancellationToken, Task> work)
         { try { await work(linked.Token); } finally { linked.Cancel(); } }
-        await Task.WhenAll(Guard(ScanLoop), Guard(ProcessLoop));
+        if (settings.AutoRegisterReferenceNumber && registration is null)
+            throw new InvalidOperationException("自動照会番号登録サービスが未接続です。");
+        var tasks = new List<Task> { Guard(ScanLoop), Guard(ProcessLoop) };
+        if (settings.AutoRegisterReferenceNumber)
+            tasks.Add(Guard(new AutomaticReferenceRegistration(store, registration!).RunAsync));
+        await Task.WhenAll(tasks);
     }
     public static bool TryTimestamp(string name, out DateTime timestamp)
     {
@@ -80,6 +86,7 @@ public sealed class FaceCaptureMonitor(CaptureStore store, AgentSettings setting
                     return store.Capture(new CaptureRecord { FileName = Path.GetFileName(path), ContentHash = Convert.ToHexString(SHA256.HashData(bytes)),
                         SourcePath = actual, GeneratedAt = generatedAt, FileCreatedAt = new DateTimeOffset(created), Encoding = settings.FaceEncoding,
                         Face = face, XmlPatientName = face?.PatientName ?? "", RequestDirectory = settings.ICallRequestDirectory, ResponseDirectory = settings.ICallResponseDirectory,
+                        AutoRegisterReferenceNumber = settings.AutoRegisterReferenceNumber, RegistrationOqsRoot = settings.OqsRoot,
                         MarkArrived = false, LinkReservation = false,
                         Stage = error is null ? CaptureStage.Captured : CaptureStage.NeedsReview, Status = error ?? "XML取得済み" }, bytes);
                 }

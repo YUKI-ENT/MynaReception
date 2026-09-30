@@ -41,6 +41,11 @@ void RejectFlat(UiNode fixture, string testName)
 }
 var flat = FlatFixture();
 var flatRows = RowParser.Parse(flat, new());
+Check(flatRows[1].Reservation.LinkButtonName == "", "flat IE parser preserves link OFF state");
+var linkedCell = Cell("");
+linkedCell.Children.Add(new() { ControlType = 50000, AutomationId = "chk57760", Name = "〆", Enabled = true });
+var linkedRow = RowParser.Parse(Table(header, Row(Cell("36"), Cell("00011"), Cell("テスト患者"), linkedCell)), new())[0].Reservation;
+Check(linkedRow.LinkButtonName == "〆" && linkedRow.InternalId == "57760", "ON button state belongs to verified patient and internal ID");
 Check(flatRows.Count == 2, "actual IE hierarchy: separate header and flat body parsed");
 Check(flatRows[1].Reservation.PatientId == "00011" && flatRows[1].Reservation.ReceptionNo == "102" &&
     flatRows[1].Reservation.PatientName == "テスト　患者", "flat table uses card column, never numeric memo column");
@@ -99,7 +104,7 @@ if (args.Length >= 1)
             "provided diagnostic: three no-ID patients have arrival buttons, with operations blocked");
 }
 
-var patient = new Reservation("36", "00011", "テスト患者", "57760", true, true);
+var patient = new Reservation("36", "00011", "テスト患者", "57760", true, true) { LinkButtonName = "", HasLinkButton = true };
 var fake = new FakeAdapter { Rows = [patient] };
 using (var service = new ReservationService(() => fake))
 {
@@ -116,7 +121,24 @@ using (var service = new ReservationService(() => fake))
     Check((await service.ExecuteAsync(new("unassigned", "link", "-", "101", "-"))).Code == "not_found" && fake.Invocations == 0,
         "service refuses placeholder patient identity");
     fake.Rows = [patient];
-    Check((await service.ExecuteAsync(Request("link"))).Code == "invoked" && fake.Invocations == 1 && !service.Snapshot.IsCurrent, "dispatch distinct from completion");
+    Check((await service.ExecuteAsync(Request("link"))).Code == "linked" && fake.Invocations == 1 && service.Snapshot.IsCurrent, "link confirms ON after single dispatch");
+    Check((await service.ExecuteAsync(Request("link"))).Code == "already_linked" && fake.Invocations == 1, "already ON never toggles OFF");
+    fake.Rows = [patient with { LinkButtonName = "〆", CanLink = false }];
+    Check((await service.ExecuteAsync(Request("link"))).Code == "already_linked" && fake.Invocations == 1, "already ON succeeds even when button is disabled");
+    fake.Rows = [patient with { LinkButtonName = "unknown" }];
+    Check((await service.ExecuteAsync(Request("link"))).Code == "link_state_unverified" && fake.Invocations == 1, "unrecognized state never clicks");
+    fake.Rows = [patient];
+    fake.ChangeIdentityOnInvoke = true;
+    Check((await service.ExecuteAsync(Request("link"))).Code == "outcome_unknown" && fake.Invocations == 2 && !service.Snapshot.IsCurrent, "changed identity after click is unknown without retry");
+    fake.ChangeIdentityOnInvoke = false;
+    fake.Rows = [patient];
+    fake.ThrowReadAfterInvoke = true;
+    Check((await service.ExecuteAsync(Request("link"))).Code == "outcome_unknown" && fake.Invocations == 3, "confirmation read failure never repeats click");
+    fake.ThrowReadAfterInvoke = false;
+    fake.ThrowOnRead = false;
+    fake.Rows = [patient];
+    fake.ThrowOnInvoke = true;
+    Check((await service.ExecuteAsync(Request("link"))).Code == "outcome_unknown" && fake.Invocations == 4, "uncertain link dispatch never retries");
     fake.ThrowOnInvoke = true;
     Check((await service.ExecuteAsync(Request("arrived"))).Code == "outcome_unknown", "invoke failure is uncertain");
     fake.ThrowOnInvoke = false;
@@ -209,6 +231,8 @@ sealed class FakeAdapter : IReservationAdapter
     public int Invocations { get; private set; }
     public bool ThrowOnRead { get; set; }
     public bool ThrowOnInvoke { get; set; }
+    public bool ChangeIdentityOnInvoke { get; set; }
+    public bool ThrowReadAfterInvoke { get; set; }
     public List<int> Threads { get; } = [];
     public IReadOnlyList<Reservation> Read()
     {
@@ -221,6 +245,9 @@ sealed class FakeAdapter : IReservationAdapter
         if (!mayInvoke()) throw new BridgeException("operations_disabled", "disabled");
         Invocations++;
         if (ThrowOnInvoke) throw new InvalidOperationException();
+        if (action == "link")
+            Rows = [expected with { LinkButtonName = "〆", PatientName = ChangeIdentityOnInvoke ? "別患者" : expected.PatientName }];
+        if (ThrowReadAfterInvoke) ThrowOnRead = true;
     }
     public string Diagnose() => "fake";
     public void Dispose() { }

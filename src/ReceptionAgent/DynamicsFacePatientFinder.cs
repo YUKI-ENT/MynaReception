@@ -9,6 +9,7 @@ internal static class DynamicsFacePatientFinder
 {
     public static async Task<FaceLookupResult> FindAsync(FaceIdentity identity, CancellationToken token)
     {
+        if (FaceReferencePatient.Resolve(identity) is { } referencePatient) return referencePatient;
         if (await DynamicsPatientProvider.ReadInstitutionCodeAsync(token) != identity.InstitutionCode)
             throw new InvalidDataException("face XMLとDynamicsの医療機関コードが異なります。");
         var birth = identity.Birthdate;
@@ -27,12 +28,6 @@ internal static class DynamicsFacePatientFinder
             candidates.Add(new(Value("カルテ番号"), Value("氏名"), kana, date));
         }
         var matches = PatientNameMatcher.Match(identity, candidates);
-        if (!string.IsNullOrWhiteSpace(identity.ReferenceNumber))
-        {
-            matches = matches.Where(m => m.PatientId == identity.ReferenceNumber).ToArray();
-            return new(matches, matches.Count == 1 ? matches[0] : null, false,
-                matches.Count == 1 ? "照会番号と氏名・生年月日が一致" : "照会番号とDynamicsの患者情報を確認してください。");
-        }
         return new(matches, matches.Count == 1 ? matches[0] : null, false,
             matches.Count == 0 ? "PATIENT_NOT_FOUND" : matches.Count > 1 ? "PATIENT_AMBIGUOUS" : "氏名カナ・生年月日で一意に一致");
     }

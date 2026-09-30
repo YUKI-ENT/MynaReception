@@ -28,6 +28,7 @@ public sealed class SingleReferenceRegistrationJob
 
 public sealed class SingleReferenceRegistrationService(string directory, TimeSpan? timeout = null)
 {
+    private readonly SemaphoreSlim registrationGate = new(1, 1);
     private string JobPath(string id)
     {
         if (!Guid.TryParseExact(id, "N", out _)) throw new ArgumentException("取込IDが不正です。");
@@ -69,6 +70,12 @@ public sealed class SingleReferenceRegistrationService(string directory, TimeSpa
     }
     public async Task<SingleReferenceRegistrationJob> RegisterAsync(CaptureRecord record, string oqsRoot, CancellationToken token)
     {
+        await registrationGate.WaitAsync(token);
+        try { return await RegisterCoreAsync(record, oqsRoot, token).ConfigureAwait(false); }
+        finally { registrationGate.Release(); }
+    }
+    private async Task<SingleReferenceRegistrationJob> RegisterCoreAsync(CaptureRecord record, string oqsRoot, CancellationToken token)
+    {
         Directory.CreateDirectory(directory);
         // This lease also prevents duplicate submissions from another ReceptionAgent process.
         using var lease = new FileStream(Path.Combine(directory, "registration.lock"), FileMode.OpenOrCreate, FileAccess.ReadWrite, FileShare.None);
@@ -99,14 +106,58 @@ public sealed class SingleReferenceRegistrationService(string directory, TimeSpa
         {
             job.State = ReferenceRegistrationState.ResultWaiting; job.Message = "単件登録の応答待ち"; Save(job);
             var xml = await new OqsFileClient(job.OqsRoot, timeout).WaitAsync(job.RequestFileName, token).ConfigureAwait(false);
-            ParseResult(xml, job);
-            job.Message = job.State == ReferenceRegistrationState.Completed ? "照会番号登録完了" :
-                "照会番号登録失敗: " + job.ErrorCode + " " + job.ErrorMessage + " " + job.ProcessingResultCode + " " + job.ProcessingResultMessage;
+            ApplyResult(xml, job);
         }
         catch (OperationCanceledException) { job.Message = "待機中断／送信済み要求は再送せず結果確認を再開できます"; Save(job); throw; }
         catch (Exception ex) { job.Message = "結果未確定／再確認可能: " + ex.Message; Save(job); throw; }
         Save(job);
         return job;
+    }
+    private static void ApplyResult(XDocument xml, SingleReferenceRegistrationJob job)
+    {
+        ParseResult(xml, job);
+        job.Message = job.State == ReferenceRegistrationState.Completed ? "照会番号登録完了" :
+            "照会番号登録失敗: " + string.Join(" ", new[] { job.ErrorCode, job.ErrorMessage,
+                job.ProcessingResultCode, job.ProcessingResultMessage }.Where(v => !string.IsNullOrWhiteSpace(v)));
+        if (job.State == ReferenceRegistrationState.Failed && job.Message.EndsWith(": "))
+            job.Message += "SegmentOfResult=" + job.SegmentOfResult + "／ProcessingResultStatus=" + job.ProcessingResultStatus;
+    }
+    public async Task RefreshResultsAsync(CancellationToken token)
+    {
+        if (!await registrationGate.WaitAsync(0, token)) return;
+        try { await RefreshResultsCoreAsync(token).ConfigureAwait(false); }
+        finally { registrationGate.Release(); }
+    }
+    private async Task RefreshResultsCoreAsync(CancellationToken token)
+    {
+        if (!Directory.Exists(directory)) return;
+        FileStream lease;
+        try { lease = new FileStream(Path.Combine(directory, "registration.lock"), FileMode.OpenOrCreate, FileAccess.ReadWrite, FileShare.None); }
+        catch (IOException) { return; } // A manual submission/result wait owns this registration history.
+        using (lease)
+        {
+            foreach (string path in Directory.GetFiles(directory, "*.json"))
+            {
+                token.ThrowIfCancellationRequested();
+                var job = ReadJob(path) ?? throw new InvalidDataException("登録履歴が不正です。");
+                if (Path.GetFileName(path) != job.CaptureId + ".json") throw new InvalidDataException("登録履歴の取込IDが一致しません。");
+                if (job.State is not (ReferenceRegistrationState.RequestSubmitted or ReferenceRegistrationState.ResultWaiting)) continue;
+                if (!File.Exists(Path.Combine(job.OqsRoot, "res", job.ResponseFileName))) continue;
+                string previousMessage = job.Message;
+                try
+                {
+                    var xml = await new OqsFileClient(job.OqsRoot, TimeSpan.FromSeconds(1)).WaitAsync(job.RequestFileName, token).ConfigureAwait(false);
+                    ApplyResult(xml, job);
+                    Save(job);
+                }
+                catch (OperationCanceledException) { throw; }
+                catch (Exception ex)
+                {
+                    job.Message = "結果未確定／再確認可能: " + ex.Message;
+                    if (previousMessage != job.Message) Save(job);
+                }
+            }
+        }
     }
     public static void ParseResult(XDocument xml, SingleReferenceRegistrationJob job)
     {

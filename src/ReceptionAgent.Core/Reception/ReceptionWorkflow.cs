@@ -53,7 +53,9 @@ public sealed class ReceptionWorkflow(CaptureStore store, Func<FaceIdentity, Can
                     record.Face = FaceXmlParser.Parse(store.ReadXml(record.Id), record.Encoding);
                     record.XmlPatientName = record.Face.PatientName ?? "";
                     store.Save(record);
-                    record.Lookup = await lookup(record.Face, token);
+                    var referencePatient = FaceReferencePatient.Resolve(record.Face);
+                    record.Lookup = referencePatient ?? await lookup(record.Face, token);
+                    record.PatientIdentifiedByDynamics = referencePatient is null && record.Lookup.Selected is not null;
                     if (record.Lookup.Selected is null) throw new InvalidDataException("患者を特定できません: " + record.Lookup.Message);
                     record.Stage = CaptureStage.PatientIdentified; record.Status = "患者ID取得済み";
                     break;
@@ -72,7 +74,7 @@ public sealed class ReceptionWorkflow(CaptureStore store, Func<FaceIdentity, Can
                     if (request.Action is "arrived" or "link" && !record.ManualOperationRequested)
                         throw new InvalidDataException("旧設定による自動操作要求を停止しました。iCallManager側の処理結果を確認してください。");
                     // The request was committed in the preceding step, before any external write.
-                    var response = await new ICallFileClient().SendAsync(request, record.RequestDirectory, record.ResponseDirectory, TimeSpan.FromSeconds(2), token);
+                    var response = await new ICallFileClient().SendAsync(request, record.RequestDirectory, record.ResponseDirectory, TimeSpan.FromSeconds(request.Action == "link" ? 20 : 2), token);
                     record.Responses.Add(response);
                     if (request.Action == "arrived") record.ArrivalResult = response.Code + ": " + response.Message;
                     if (request.Action == "link") record.LinkResult = response.Code + ": " + response.Message;
@@ -86,7 +88,8 @@ public sealed class ReceptionWorkflow(CaptureStore store, Func<FaceIdentity, Can
                     }
                     else
                     {
-                        if (response.Code != "invoked") throw new InvalidDataException("操作応答の内容を確認してください。");
+                        if (request.Action == "link" ? response.Code is not ("linked" or "already_linked" or "invoked") : response.Code != "invoked")
+                            throw new InvalidDataException("操作応答の内容を確認してください。");
                         Complete(record);
                     }
                     record.PendingRequest = null; record.ManualOperationRequested = false;

@@ -112,12 +112,19 @@ MSAAのTable / Row / Cell、またはセルを持つUIA DataItemの構造も引�
 
 連携は `action: "link"` です。各操作では最新画面から患者行を再特定し、受付番号・患者名を照合します。`案内`・`保留`はAPI対象外です。`print`は差し替え用インターフェースだけ用意し、現時点では`printing_not_configured`を返します。
 
-`success: true, code: "invoked"` はInvokePattern呼出しを送信した意味です。iCallの確認ダイアログ、サーバー処理やDynamics受付の完了は保証しません。実環境で来院確認後・連携後の表示を確認し、その後の完了判定を追加してください。自動の一括受付は現段階では実装していません。
+来院確認の `success: true, code: "invoked"` はInvokePattern呼出しを送信した意味です。
+
+連携はONにする操作です。ボタン名が `〆` なら押さずに `already_linked` を返します。空欄ならiCallを前面にしてボタンへマウスを移動し、2.5秒ホバー後に患者行を再照合して１回だけクリックします。同じ行・内部IDのボタン名が `〆` に変わったことを最大8秒確認し、`linked` を返します。確認できない場合は `outcome_unknown` とし、自動の再クリックはしません。その他のボタン名は `link_state_unverified` で停止します。
+
+ホバー中はマウスを動かさず、iCall管理画面を表示できるデスクトップで実行してください。マウス移動・遮蔽・ボタン位置変更を検知した場合は `hover_interrupted` で停止します。カーソルはボタン位置に残ります。`linked` はiCall上のON表示の確認であり、Dynamics側の受付完了は実環境で確認してください。ReceptionAgentは連携応答を20秒待ち、旧iCallManagerの `invoked` も互換性のため受け付けます。
 
 | code | 意味・対応 |
 |---|---|
 | found | 現在の一覧から予約取得 |
 | invoked | ボタン操作送信済み。業務処理完了は別途確認 |
+| linked / already_linked | 連携ONを確認／既にONのため押下なし |
+| hover_unavailable / hover_interrupted | 前面表示・マウス位置・遮蔽を確認 |
+| link_state_unverified | 連携ボタン名が空欄・〆のどちらでもない |
 | operations_disabled | アプリで実操作が無効 |
 | not_found | 表示一覧に患者がいない |
 | ambiguous_patient | 同じ患者IDの行が複数ある |

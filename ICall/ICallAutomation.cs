@@ -105,6 +105,9 @@ public sealed class ICallAutomation(AppSettings settings) : IReservationAdapter
     }
 
     public void Invoke(Reservation expected, string action, Func<bool> mayInvoke)
+        => InvokeCore(expected, action, mayInvoke, true);
+
+    private void InvokeCore(Reservation expected, string action, Func<bool> mayInvoke, bool prepareHover)
     {
         if (action is not ("arrived" or "link")) throw new BridgeException("unsupported_action", "操作対象外です。");
         if (!expected.HasPatientIdentity) throw new BridgeException("identity_missing", "患者未割当の予約は操作できません。");
@@ -115,9 +118,19 @@ public sealed class ICallAutomation(AppSettings settings) : IReservationAdapter
             throw new BridgeException("identity_changed", "操作直前に患者行が変わりました。再確認してください。");
         var row = rows[0];
         var buttonNode = action == "arrived" ? row.Arrival : row.Link;
+        if (action == "link" && buttonNode?.Name == "〆") return;
+        if (action == "link" && buttonNode?.Name != "")
+            throw new BridgeException("link_state_unverified", "連携ボタンの状態を確認できません。");
         if (buttonNode is null || !buttonNode.Enabled)
             throw new BridgeException("action_unavailable", "対象ボタンが操作できません。");
         var button = capture.Elements[buttonNode.Key];
+        if (action == "link" && prepareHover)
+        {
+            Hover(capture, button, mayInvoke);
+            // A fresh tree is required after waiting: the list can refresh or reorder.
+            InvokeCore(expected, action, mayInvoke, false);
+            return;
+        }
         // Verify the live identity cells again. UIA trees are not atomic snapshots.
         var liveRow = capture.Elements[row.Container.Key];
         if (liveRow.CurrentIsEnabled == 0 || button.CurrentIsEnabled == 0 ||
@@ -129,11 +142,72 @@ public sealed class ICallAutomation(AppSettings settings) : IReservationAdapter
             .Where(n => n.ControlType == 50020 || n.Role == 29))
             if ((capture.Elements[node.Key].CurrentName ?? "").Trim() != node.Name)
                 throw new BridgeException("identity_changed", "患者行の内容が変わりました。再確認してください。");
+        if (action == "link")
+        {
+            VerifyPointer(capture, button);
+            if (!mayInvoke()) throw new BridgeException("operations_disabled", "実操作が無効になりました。");
+            try
+            {
+                // One physical click after mouseover. Never fall back to another click.
+                mouse_event(0x0002, 0, 0, 0, UIntPtr.Zero);
+                mouse_event(0x0004, 0, 0, 0, UIntPtr.Zero);
+            }
+            catch { throw new BridgeException("outcome_unknown", "連携クリックの結果が不明です。画面を確認してください。"); }
+            return;
+        }
         if (button.GetCurrentPattern(UIA_PatternIds.UIA_InvokePatternId) is not IUIAutomationInvokePattern invoke)
             throw new BridgeException("invoke_unavailable", "InvokePatternがありません。");
         capture.Own(invoke);
         if (!mayInvoke()) throw new BridgeException("operations_disabled", "実操作が無効になりました。");
         invoke.Invoke();
+    }
+
+    [StructLayout(LayoutKind.Sequential)]
+    private struct CursorPoint { public int X; public int Y; }
+    [DllImport("user32.dll")] private static extern bool SetCursorPos(int x, int y);
+    [DllImport("user32.dll")] private static extern bool GetCursorPos(out CursorPoint point);
+    [DllImport("user32.dll")] private static extern bool SetForegroundWindow(IntPtr hwnd);
+    [DllImport("user32.dll")] private static extern IntPtr GetForegroundWindow();
+    [DllImport("user32.dll")] private static extern IntPtr GetAncestor(IntPtr hwnd, uint flags);
+    [DllImport("user32.dll")] private static extern IntPtr WindowFromPoint(CursorPoint point);
+    [DllImport("user32.dll")] private static extern void mouse_event(uint flags, uint dx, uint dy, uint data, UIntPtr extra);
+
+    private static IntPtr MainWindow(Capture capture) =>
+        GetAncestor(new IntPtr(capture.Elements[capture.Root.Key].CurrentNativeWindowHandle), 2);
+
+    private void VerifyPointer(Capture capture, IUIAutomationElement button)
+    {
+        var rect = button.CurrentBoundingRectangle;
+        var main = MainWindow(capture);
+        if (main == IntPtr.Zero || GetForegroundWindow() != main || button.CurrentIsOffscreen != 0 ||
+            rect.right <= rect.left || rect.bottom <= rect.top || !GetCursorPos(out var point) ||
+            point.X != (rect.left + rect.right) / 2 || point.Y != (rect.top + rect.bottom) / 2 ||
+            GetAncestor(WindowFromPoint(point), 2) != main)
+            throw new BridgeException("hover_interrupted", "連携ボタンの位置・前面表示またはマウス位置が変わりました。操作を中止しました。");
+        var hit = capture.Own(automation.ElementFromPoint(new tagPOINT { x = point.X, y = point.Y }));
+        if (hit.CurrentProcessId != button.CurrentProcessId || hit.CurrentControlType != 50000 ||
+            hit.CurrentAutomationId != button.CurrentAutomationId)
+            throw new BridgeException("hover_interrupted", "マウス位置に対象の連携ボタンがありません。操作を中止しました。");
+    }
+
+    private void Hover(Capture capture, IUIAutomationElement button, Func<bool> mayOperate)
+    {
+        if (!mayOperate()) throw new BridgeException("operations_disabled", "実操作が無効になりました。");
+        var main = MainWindow(capture);
+        if (main == IntPtr.Zero || GetForegroundWindow() != main && !SetForegroundWindow(main))
+            throw new BridgeException("hover_unavailable", "iCall管理画面を前面に表示してください。");
+        if (button.GetCurrentPattern(UIA_PatternIds.UIA_ScrollItemPatternId) is IUIAutomationScrollItemPattern scroll)
+        { capture.Own(scroll); scroll.ScrollIntoView(); }
+        var rect = button.CurrentBoundingRectangle;
+        if (button.CurrentIsOffscreen != 0 || rect.right <= rect.left || rect.bottom <= rect.top ||
+            !SetCursorPos((rect.left + rect.right) / 2, (rect.top + rect.bottom) / 2))
+            throw new BridgeException("hover_unavailable", "連携ボタンへマウスを移動できません。");
+        for (int i = 0; i < 25; i++)
+        {
+            Thread.Sleep(100);
+            if (!mayOperate()) throw new BridgeException("operations_disabled", "実操作が無効になりました。");
+            VerifyPointer(capture, button);
+        }
     }
 
     private static void VerifyCells(Capture capture, ParsedRow row)

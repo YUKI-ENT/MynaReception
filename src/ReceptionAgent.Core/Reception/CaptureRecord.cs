@@ -24,6 +24,11 @@ public sealed class CaptureRecord
     public string Status { get; set; } = "XML取得済み";
     public string RequestDirectory { get; set; } = "";
     public string ResponseDirectory { get; set; } = "";
+    public bool AutoRegisterReferenceNumber { get; set; }
+    public string RegistrationOqsRoot { get; set; } = "";
+    public bool PatientIdentifiedByDynamics { get; set; }
+    public bool AutomaticRegistrationAttempted { get; set; }
+    public string AutomaticRegistrationError { get; set; } = "";
     public bool MarkArrived { get; set; }
     public bool LinkReservation { get; set; }
     public bool ManualOperationRequested { get; set; }
