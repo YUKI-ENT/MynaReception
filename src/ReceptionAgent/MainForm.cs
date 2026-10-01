@@ -12,6 +12,9 @@ public sealed class MainForm : Form
         RowHeadersVisible = false, BackgroundColor = SystemColors.Window, AutoSizeColumnsMode = DataGridViewAutoSizeColumnsMode.DisplayedCells,
         SelectionMode = DataGridViewSelectionMode.FullRowSelect, MultiSelect = false };
     private readonly System.Windows.Forms.Timer refresh = new() { Interval = 1000 };
+    private readonly ComboBox displayDate = new() { DropDownStyle = ComboBoxStyle.DropDownList, Width = 190 };
+    private bool updatingDates;
+    private bool followToday = true;
     private CancellationTokenSource? cancellation;
     private FaceCaptureMonitor? monitor;
     private readonly SingleReferenceRegistrationService registration = new(Path.Combine(DataDirectory, "SingleReferenceRegistration"), TimeSpan.FromSeconds(30));
@@ -28,11 +31,26 @@ public sealed class MainForm : Form
     {
         Text = "ReceptionAgent — 受付ステータス"; StartPosition = FormStartPosition.CenterScreen;
         Size = new Size(1280, 720); MinimumSize = new Size(960, 550);
-        var layout = new TableLayoutPanel { Dock = DockStyle.Fill, Padding = new Padding(16), ColumnCount = 1, RowCount = 4 };
+        var layout = new TableLayoutPanel { Dock = DockStyle.Fill, Padding = new Padding(16), ColumnCount = 1, RowCount = 5 };
+        layout.RowStyles.Add(new(SizeType.AutoSize));
         layout.RowStyles.Add(new(SizeType.AutoSize));
         layout.RowStyles.Add(new(SizeType.Percent, 100)); layout.RowStyles.Add(new(SizeType.AutoSize)); layout.RowStyles.Add(new(SizeType.AutoSize));
-        layout.Controls.Add(status, 0, 0); layout.Controls.Add(grid, 0, 1);
-        layout.Controls.Add(new Label { AutoSize = true, Text = "最新500件／ダブルクリックで詳細。選択行から手動操作します。来院確認・連携の結果はボタン呼出し結果です。" }, 0, 2);
+        var dateBar = new FlowLayoutPanel { Dock = DockStyle.Fill, AutoSize = true };
+        dateBar.Controls.Add(new Label { AutoSize = true, Text = "表示日（XML生成日）", Margin = new Padding(3, 6, 8, 3) });
+        dateBar.Controls.Add(displayDate);
+        displayDate.Format += (_, e) =>
+        {
+            if (e.ListItem is DateOnly date) e.Value = date.ToString("yyyy/MM/dd") + (date == DateOnly.FromDateTime(DateTime.Today) ? "（当日）" : "");
+        };
+        displayDate.FormattingEnabled = true;
+        displayDate.SelectedIndexChanged += (_, _) =>
+        {
+            if (updatingDates) return;
+            followToday = displayDate.SelectedItem is DateOnly date && date == DateOnly.FromDateTime(DateTime.Today);
+            revision = null; Reload();
+        };
+        layout.Controls.Add(status, 0, 0); layout.Controls.Add(dateBar, 0, 1); layout.Controls.Add(grid, 0, 2);
+        layout.Controls.Add(new Label { AutoSize = true, Text = "選択日の最新500件／ダブルクリックで詳細。選択行から手動操作します。来院確認・連携の結果はボタン呼出し結果です。" }, 0, 3);
         var commands = new FlowLayoutPanel { Dock = DockStyle.Fill, AutoSize = true };
         var start = new Button { Text = "監視開始", AutoSize = true }; var stop = new Button { Text = "監視停止", Enabled = false, AutoSize = true };
         var settings = new Button { Text = "設定", AutoSize = true }; var manual = new Button { Text = "手動患者検索（テスト）", AutoSize = true };
@@ -42,7 +60,7 @@ public sealed class MainForm : Form
             try
             {
                 var config = AgentSettings.Load(DataDirectory); config.ValidateMonitoring();
-                cancellation = new CancellationTokenSource(); monitor = new FaceCaptureMonitor(store, config, DynamicsFacePatientFinder.FindAsync, registration);
+                cancellation = new CancellationTokenSource(); monitor = new FaceCaptureMonitor(store, config, DynamicsFacePatientFinder.FindAsync, registration, DynamicsFacePatientFinder.VerifyAsync);
                 start.Enabled = settings.Enabled = false; stop.Enabled = true;
                 await Task.Run(() => monitor.RunAsync(cancellation.Token));
             }
@@ -58,17 +76,17 @@ public sealed class MainForm : Form
         register.Click += async (_, _) => await RunSelectedAsync("register");
         grid.SelectionChanged += (_, _) => UpdateActions();
         commands.Controls.AddRange([arrived, link, register, start, stop, settings, manual]);
-        layout.Controls.Add(commands, 0, 3); Controls.Add(layout);
+        layout.Controls.Add(commands, 0, 4); Controls.Add(layout);
         grid.CellDoubleClick += (_, e) =>
         {
             if (e.RowIndex < 0) return;
             var r = records.FirstOrDefault(r => r.Id == grid.Rows[e.RowIndex].Cells["ID"].Value as string);
             if (r is null) return;
-            string detail = $"{r.FileName}\r\n取得元: {r.SourcePath}\r\n状態: {r.Status}\r\n患者照合: {r.Lookup?.Message}\r\n来院確認: {r.ArrivalResult}\r\n連携: {r.LinkResult}\r\n要求ID: {r.PendingRequest?.RequestId}\r\n";
+            string detail = $"{r.FileName}\r\n取得元: {r.SourcePath}\r\n状態: {r.Status}\r\n患者照合: {r.Lookup?.Message}\r\n再検証: {r.ReconciliationStatus}\r\n再検証カルテ番号: {r.VerifiedPatientId}\r\n次回: {r.ReconciliationNextAt}\r\n来院確認: {r.ArrivalResult}\r\n連携: {r.LinkResult}\r\n要求ID: {r.PendingRequest?.RequestId}\r\n";
             if (r.Face?.Insurance is { } insurance) detail += $"保険者番号: {insurance.InsurerNumber}\r\n記号: {insurance.Symbol}\r\n番号: {insurance.Number}\r\n枝番: {insurance.Branch}\r\n";
             if (r.Lookup is not null) detail += string.Join("\r\n", r.Lookup.Candidates.Select(c => $"候補: {c.PatientId} / {c.Name} / {string.Join(",", c.RawChartNumbers)}"));
             var job = registration.Load(r.Id);
-            if (job is not null) detail += $"\r\n照会番号登録: {job.State} / {job.Message}\r\n要求: {job.RequestFileName}\r\n応答: {job.ResponseFileName}\r\n結果: {job.SegmentOfResult} / {job.ErrorCode} / {job.ErrorMessage} / {job.ProcessingResultStatus} / {job.ProcessingResultCode} / {job.ProcessingResultMessage}";
+            if (job is not null) detail += $"\r\n照会番号登録: {job.State} / {job.Message}\r\n登録番号: {job.Target.ReferenceNumber}\r\n訂正前: {job.PreviousReferenceNumber} / 訂正回数: {job.CorrectionCount}\r\n要求: {job.RequestFileName}\r\n応答: {job.ResponseFileName}\r\n結果: {job.SegmentOfResult} / {job.ErrorCode} / {job.ErrorMessage} / {job.ProcessingResultStatus} / {job.ProcessingResultCode} / {job.ProcessingResultMessage}";
             MessageBox.Show(this, detail, "取込結果");
         };
         refresh.Tick += async (_, _) => await RefreshAsync();
@@ -110,10 +128,24 @@ public sealed class MainForm : Form
     };
     private void Reload()
     {
-        var rows = store.List();
+        var today = DateOnly.FromDateTime(DateTime.Today);
+        var selectedDate = followToday ? today : displayDate.SelectedItem is DateOnly date ? date : today;
+        var dates = store.ListDates().Append(today).Distinct().OrderDescending().ToArray();
+        if (!displayDate.Items.Cast<DateOnly>().SequenceEqual(dates) || !Equals(displayDate.SelectedItem, selectedDate))
+        {
+            updatingDates = true;
+            try
+            {
+                displayDate.Items.Clear();
+                displayDate.Items.AddRange(dates.Cast<object>().ToArray());
+                displayDate.SelectedItem = selectedDate;
+            }
+            finally { updatingDates = false; }
+        }
+        var rows = store.List(date: selectedDate);
         if (!busy && monitor is not null && cancellation?.IsCancellationRequested == false) status.Text = monitor.CaptureStatus + $" ／ 要確認 {rows.Count(r => r.Conflict || r.Stage == CaptureStage.NeedsReview)}件（表示範囲）";
         var jobs = rows.ToDictionary(r => r.Id, r => registration.Load(r.Id));
-        string next = string.Join('|', rows.Select(r => r.Id + r.UpdatedAt.ToString("O") + r.Conflict + jobs[r.Id]?.UpdatedAt.ToString("O")));
+        string next = selectedDate.ToString("yyyy-MM-dd") + ":" + string.Join('|', rows.Select(r => r.Id + r.UpdatedAt.ToString("O") + r.Conflict + jobs[r.Id]?.UpdatedAt.ToString("O")));
         if (revision == next) return;
         string? selected = grid.CurrentRow?.Cells["ID"].Value as string;
         records = rows; revision = next;
@@ -123,6 +155,7 @@ public sealed class MainForm : Form
                 !string.IsNullOrWhiteSpace(r.ReservationPatientName) ? r.ReservationPatientName : r.XmlPatientName, フリガナ = r.Face?.NameKana, 生年月日 = r.Face?.Birthdate.ToString("yyyy/MM/dd"),
             保険者番号 = r.Face?.Insurance?.InsurerNumber, 記号 = r.Face?.Insurance?.Symbol, 番号 = r.Face?.Insurance?.Number, 枝番 = r.Face?.Insurance?.Branch,
             来院確認 = r.ArrivalResult, 連携 = r.LinkResult, 照会番号 = r.Face?.ReferenceNumber, 照会番号登録 = RegistrationStatus(r, jobs[r.Id]), ファイル名 = r.FileName, ファイル作成日時 = r.FileCreatedAt?.ToLocalTime().ToString("yyyy/MM/dd HH:mm:ss"),
+            再検証カルテ番号 = r.VerifiedPatientId, 再検証 = r.ReconciliationStatus,
             XML生成日時 = r.GeneratedAt.ToString("yyyy/MM/dd HH:mm:ss"), 取得日時 = r.CapturedAt.ToString("yyyy/MM/dd HH:mm:ss") }).ToList();
         foreach (string column in new[] { "ID", "内部カルテ番号", "保険者番号", "記号", "番号", "枝番" })
             if (grid.Columns[column] is { } hidden) hidden.Visible = false;
@@ -147,7 +180,8 @@ public sealed class MainForm : Form
     private void UpdateActions()
     {
         var record = SelectedRecord();
-        bool identified = !busy && record is { Conflict: false, Lookup.Selected: not null };
+        bool identified = !busy && record is { Conflict: false, ReconciliationIdentityMismatch: false, Lookup.Selected: not null } &&
+            (record.VerifiedPatientId.Length == 0 || record.VerifiedPatientId == record.Lookup.Selected.PatientId);
         bool reservation = identified && record!.GeneratedAt.Date == DateTime.Today &&
             !string.IsNullOrWhiteSpace(record.ReceptionNo) && !string.IsNullOrWhiteSpace(record.ReservationPatientName);
         bool CanOperate(string action) => reservation &&

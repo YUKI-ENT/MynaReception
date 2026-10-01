@@ -17,19 +17,37 @@ public sealed record Reservation(string ReceptionNo, string PatientId, string Pa
         : string.IsNullOrWhiteSpace(PatientName) || PatientName == "-" ? "患者名なし・操作不可" : "";
 }
 
-public sealed record BridgeRequest(string RequestId, string Action, string PatientId,
+public sealed record BridgeRequest(string RequestId, string Action, string PatientId = "",
     string? ExpectedReceptionNo = null, string? ExpectedPatientName = null)
 {
+    [System.Text.Json.Serialization.JsonIgnore(Condition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull)]
+    public string? PatientName { get; init; }
+    [System.Text.Json.Serialization.JsonIgnore(Condition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull)]
+    public string? NameKana { get; init; }
+    [System.Text.Json.Serialization.JsonIgnore(Condition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull)]
+    public string? GivenName { get; init; }
+    [System.Text.Json.Serialization.JsonIgnore(Condition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull)]
+    public string? Birthdate { get; init; }
     public string Fingerprint() => Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(
         System.Text.Encoding.UTF8.GetBytes(System.Text.Json.JsonSerializer.Serialize(this, AppSettings.Json))));
 }
 
 public sealed record OperationResult(bool Success, string Code, string Message,
-    Reservation? Reservation = null);
+    Reservation? Reservation = null)
+{
+    public IReadOnlyList<ReservationCandidate>? Candidates { get; init; }
+}
+
+public sealed record ReservationCandidate(string ReceptionNo, string? PatientId, string PatientName,
+    string ParsedName, string Birthdate, string NameMatch, bool RequiresConfirmation = true);
 
 public sealed record BridgeResponse(string RequestId, bool Success, string Code, string Message,
     string? PatientId, string? ReceptionNo, string? PatientName, DateTimeOffset CompletedAt,
-    string RequestFingerprint = "");
+    string RequestFingerprint = "")
+{
+    [System.Text.Json.Serialization.JsonIgnore(Condition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull)]
+    public IReadOnlyList<ReservationCandidate>? Candidates { get; init; }
+}
 
 public sealed record SyncSnapshot(DateTimeOffset? LastSuccess, bool IsCurrent,
     IReadOnlyList<Reservation> Rows, string Status);

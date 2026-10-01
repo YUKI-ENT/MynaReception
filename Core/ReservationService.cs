@@ -73,10 +73,15 @@ public sealed class ReservationService : IDisposable
     {
         try
         {
+            if (request.Action == "find_candidates")
+            {
+                ReservationCandidateSearch.Validate(request);
+                return ReservationCandidateSearch.Search(request, Read());
+            }
             if (string.IsNullOrWhiteSpace(request.PatientId) || request.PatientId.Length > 100)
                 return new(false, "invalid_request", "patientIdを指定してください。");
             if (request.Action is not ("find" or "arrived" or "link" or "print" or "assign"))
-                return new(false, "unsupported_action", "操作はfind / arrived / link / print / assignです。");
+                return new(false, "unsupported_action", "操作はfind / find_candidates / arrived / link / print / assignです。");
             if (request.Action != "find" && !operationsEnabled)
                 return new(false, "operations_disabled", "アプリで実操作を有効にしてください。");
             if (request.Action == "assign") return Assign(request);

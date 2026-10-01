@@ -53,10 +53,26 @@ public sealed class CaptureStore
         command.Parameters.AddWithValue("$updated", record.UpdatedAt.ToString("O")); command.Parameters.AddWithValue("$id", record.Id);
         if (command.ExecuteNonQuery() != 1) throw new InvalidDataException("取込記録が競合しています。同名XMLの内容を確認してください。");
     }
-    public IReadOnlyList<CaptureRecord> List(bool pendingOnly = false, int limit = 500)
+    public IReadOnlyList<DateOnly> ListDates()
     {
         using var connection = Open(); using var command = connection.CreateCommand();
-        command.CommandText = "SELECT data,conflict FROM captures " + (pendingOnly ? "WHERE conflict=0 AND stage NOT IN ($done,$review) " : "") + "ORDER BY updated " + (pendingOnly ? "ASC" : "DESC") + " LIMIT $limit";
+        command.CommandText = "SELECT DISTINCT substr(json_extract(data,'$.GeneratedAt'),1,10) AS day FROM captures ORDER BY day DESC";
+        using var reader = command.ExecuteReader(); var dates = new List<DateOnly>();
+        while (reader.Read())
+            dates.Add(DateOnly.ParseExact(reader.GetString(0), "yyyy-MM-dd", System.Globalization.CultureInfo.InvariantCulture));
+        return dates;
+    }
+    public IReadOnlyList<CaptureRecord> List(bool pendingOnly = false, int limit = 500, DateOnly? date = null)
+    {
+        using var connection = Open(); using var command = connection.CreateCommand();
+        var conditions = new List<string>();
+        if (pendingOnly) conditions.Add("conflict=0 AND stage NOT IN ($done,$review)");
+        if (date.HasValue)
+        {
+            conditions.Add("substr(json_extract(data,'$.GeneratedAt'),1,10)=$date");
+            command.Parameters.AddWithValue("$date", date.Value.ToString("yyyy-MM-dd", System.Globalization.CultureInfo.InvariantCulture));
+        }
+        command.CommandText = "SELECT data,conflict FROM captures " + (conditions.Count > 0 ? "WHERE " + string.Join(" AND ", conditions) + " " : "") + "ORDER BY updated " + (pendingOnly ? "ASC" : "DESC") + " LIMIT $limit";
         command.Parameters.AddWithValue("$limit", limit);
         if (pendingOnly) { command.Parameters.AddWithValue("$done", (int)CaptureStage.Completed); command.Parameters.AddWithValue("$review", (int)CaptureStage.NeedsReview); }
         using var reader = command.ExecuteReader(); var records = new List<CaptureRecord>();

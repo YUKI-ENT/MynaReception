@@ -8,6 +8,17 @@ public sealed record FaceLookupResult(IReadOnlyList<FacePatientMatch> Candidates
 
 public static class PatientInsuranceMatcher
 {
+    public static FaceLookupResult Verify(IReadOnlyList<FacePatientMatch> candidates, FaceInsurance? xmlInsurance, IEnumerable<FaceInsuranceCandidate> insuranceRows)
+    {
+        if (!IsUsable(xmlInsurance)) return new(candidates, null, true, "再検証待ち：XMLの保険情報が不足しています。");
+        var expected = Normalize(xmlInsurance!);
+        var charts = insuranceRows.Where(r => IsUsable(r.Insurance) && Normalize(r.Insurance) == expected)
+            .Select(r => r.RawChartNo).ToHashSet(StringComparer.Ordinal);
+        var matches = candidates.Select(c => c with { RawChartNumbers = c.RawChartNumbers.Where(charts.Contains).ToArray() })
+            .Where(c => c.RawChartNumbers.Length > 0).ToArray();
+        return matches.Length == 1 ? new(matches, matches[0], true, "Dynamicsの氏名カナ・生年月日・保険4項目で再検証")
+            : new(candidates, null, true, matches.Length == 0 ? "再検証待ち：カルテまたは保険情報が未一致" : "要確認：保険情報が一致する患者も複数");
+    }
     private static string Clean(string? value) => (value ?? "").Normalize(NormalizationForm.FormKC).Trim();
     private static FaceInsurance Normalize(FaceInsurance value)
     {

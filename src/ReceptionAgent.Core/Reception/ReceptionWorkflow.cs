@@ -24,6 +24,8 @@ public sealed class ReceptionWorkflow(CaptureStore store, Func<FaceIdentity, Can
         try
         {
             var record = store.Get(id);
+            if (record.ReconciliationIdentityMismatch || record.VerifiedPatientId.Length > 0 && record.VerifiedPatientId != record.Lookup?.Selected?.PatientId)
+                throw new InvalidDataException("Dynamics再検証のカルテ番号が受付時と異なります。職員が予約・受付を確認してください。");
             if (record.Conflict || record.GeneratedAt.Date != DateTime.Today || record.Lookup?.Selected is null ||
                 string.IsNullOrWhiteSpace(record.ReceptionNo) || string.IsNullOrWhiteSpace(record.ReservationPatientName))
                 throw new InvalidDataException("当日分の患者・予約が特定済みの行を選択してください。");

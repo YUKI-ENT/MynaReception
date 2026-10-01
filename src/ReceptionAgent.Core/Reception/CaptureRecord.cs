@@ -29,6 +29,13 @@ public sealed class CaptureRecord
     public bool PatientIdentifiedByDynamics { get; set; }
     public bool AutomaticRegistrationAttempted { get; set; }
     public string AutomaticRegistrationError { get; set; } = "";
+    public DateTimeOffset ReconciliationNextAt { get; set; }
+    public DateTimeOffset ReconciliationFirstMatchAt { get; set; }
+    public string ReconciliationCandidateId { get; set; } = "";
+    public string VerifiedPatientId { get; set; } = "";
+    public bool ReconciliationIdentityMismatch { get; set; }
+    public string ReconciliationStatus { get; set; } = "未検証";
+    public int ReconciliationChecks { get; set; }
     public bool MarkArrived { get; set; }
     public bool LinkReservation { get; set; }
     public bool ManualOperationRequested { get; set; }

@@ -24,6 +24,8 @@ public sealed class SingleReferenceRegistrationJob
     public string ProcessingResultMessage { get; set; } = "";
     public string Message { get; set; } = "";
     public DateTimeOffset UpdatedAt { get; set; }
+    public int CorrectionCount { get; set; }
+    public string PreviousReferenceNumber { get; set; } = "";
 }
 
 public sealed class SingleReferenceRegistrationService(string directory, TimeSpan? timeout = null)
@@ -61,6 +63,8 @@ public sealed class SingleReferenceRegistrationService(string directory, TimeSpa
     {
         if (record.Conflict || record.Lookup?.Selected is not { } patient || record.Face is not { } face)
             throw new InvalidDataException("患者が一意に特定された行を選択してください。");
+        if (record.ReconciliationIdentityMismatch || record.VerifiedPatientId.Length > 0 && record.VerifiedPatientId != patient.PatientId)
+            throw new InvalidDataException("受付時の患者IDとDynamics再検証の患者IDが異なります。");
         if (record.Lookup.Candidates.Count != 1) throw new InvalidDataException("患者候補が複数のため登録できません。");
         if (!string.IsNullOrWhiteSpace(face.ReferenceNumber))
             throw new InvalidDataException("face XMLには照会番号が登録済みです。");
@@ -74,12 +78,40 @@ public sealed class SingleReferenceRegistrationService(string directory, TimeSpa
         try { return await RegisterCoreAsync(record, oqsRoot, token).ConfigureAwait(false); }
         finally { registrationGate.Release(); }
     }
-    private async Task<SingleReferenceRegistrationJob> RegisterCoreAsync(CaptureRecord record, string oqsRoot, CancellationToken token)
+    public async Task<SingleReferenceRegistrationJob> RegisterVerifiedAsync(CaptureRecord record, Face.FaceLookupResult verified, string oqsRoot, CancellationToken token)
+    {
+        if (!verified.InsuranceChecked || verified.Selected is not { } patient || verified.Candidates.Count != 1 ||
+            verified.Candidates[0] != patient || record.Face is not { } face || record.Conflict ||
+            record.GeneratedAt.Date != DateTime.Today || patient.Birthdate != face.Birthdate ||
+            Face.PatientNameMatcher.NormalizeKanaForMatching(patient.NameKana) != Face.PatientNameMatcher.NormalizeKanaForMatching(face.NameKana) ||
+            !Face.PatientInsuranceMatcher.IsUsable(face.Insurance))
+            throw new InvalidDataException("当日XMLとDynamicsの氏名・生年月日・保険情報の一意な再検証が必要です。");
+        var snapshot = new CaptureRecord { Id = record.Id, Face = face with { ReferenceNumber = null }, Lookup = verified };
+        await registrationGate.WaitAsync(token);
+        try { return await RegisterCoreAsync(snapshot, oqsRoot, token, true, face.ReferenceNumber ?? "").ConfigureAwait(false); }
+        finally { registrationGate.Release(); }
+    }
+    private async Task<SingleReferenceRegistrationJob> RegisterCoreAsync(CaptureRecord record, string oqsRoot, CancellationToken token,
+        bool verifiedRegistration = false, string xmlReference = "")
     {
         Directory.CreateDirectory(directory);
         // This lease also prevents duplicate submissions from another ReceptionAgent process.
         using var lease = new FileStream(Path.Combine(directory, "registration.lock"), FileMode.OpenOrCreate, FileAccess.ReadWrite, FileShare.None);
         var job = Load(record.Id);
+        SingleReferenceRegistrationJob? previous = null;
+        int corrections = 0;
+        if (verifiedRegistration)
+        {
+            var target = TargetFrom(record);
+            if (job is not null && job.Target != target)
+            {
+                if (job.State is not (ReferenceRegistrationState.Completed or ReferenceRegistrationState.Failed))
+                    throw new InvalidDataException("前の照会番号登録結果が未確定のため訂正を停止しました。");
+                if (job.CorrectionCount >= 1) throw new InvalidDataException("再度の番号変更は職員確認が必要です。");
+                previous = job; corrections = job.CorrectionCount + 1; job = null;
+            }
+            else if (job is null && xmlReference.Length > 0 && xmlReference != target.ReferenceNumber) corrections = 1;
+        }
         if (job?.State is ReferenceRegistrationState.Completed or ReferenceRegistrationState.Failed) return job;
         if (job is null)
         {
@@ -90,6 +122,7 @@ public sealed class SingleReferenceRegistrationService(string directory, TimeSpa
             byte[] xml = new ReferenceNumberRequestBuilder().Build(record.Face!.InstitutionCode, identifier, target, singlePatient: true);
             token.ThrowIfCancellationRequested();
             job = new() { CaptureId = record.Id, Target = target, InstitutionCode = record.Face.InstitutionCode,
+                CorrectionCount = corrections, PreviousReferenceNumber = previous?.Target.ReferenceNumber ?? xmlReference,
                 Identifier = identifier, OqsRoot = oqsRoot, RequestFileName = "OQSsiimm01req_" +
                 new OqsRequestSequence(directory).Next(DateOnly.FromDateTime(DateTime.Now)) + ".xml",
                 State = ReferenceRegistrationState.RequestSubmitted, Message = "要求保存済み／結果確認待ち" };
@@ -97,6 +130,16 @@ public sealed class SingleReferenceRegistrationService(string directory, TimeSpa
             string work = Path.Combine(directory, "Work"); Directory.CreateDirectory(work);
             using (var output = new FileStream(Path.Combine(work, job.RequestFileName), FileMode.CreateNew, FileAccess.Write, FileShare.None))
             { output.Write(xml); output.Flush(true); }
+            if (previous is not null)
+            {
+                string history = Path.Combine(directory, "History"); Directory.CreateDirectory(history);
+                string archive = Path.Combine(history, previous.CaptureId + "-" + previous.Identifier + ".json");
+                if (!File.Exists(archive))
+                {
+                    using var output = new FileStream(archive, FileMode.CreateNew, FileAccess.Write, FileShare.None);
+                    JsonSerializer.Serialize(output, previous); output.Flush(true);
+                }
+            }
             Save(job);
             try { files.Submit(job.RequestFileName, xml); }
             catch (Exception ex)

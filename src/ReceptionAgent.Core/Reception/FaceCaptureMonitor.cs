@@ -7,7 +7,8 @@ using ReceptionAgent.Oqs.ReferenceNumber;
 
 namespace ReceptionAgent.Reception;
 
-public sealed class FaceCaptureMonitor(CaptureStore store, AgentSettings settings, Func<FaceIdentity, CancellationToken, Task<FaceLookupResult>> lookup, SingleReferenceRegistrationService? registration = null)
+public sealed class FaceCaptureMonitor(CaptureStore store, AgentSettings settings, Func<FaceIdentity, CancellationToken, Task<FaceLookupResult>> lookup, SingleReferenceRegistrationService? registration = null,
+    Func<FaceIdentity, CancellationToken, Task<FaceLookupResult>>? verify = null)
 {
     private readonly ConcurrentDictionary<string, (long, DateTime)> seen = new(StringComparer.OrdinalIgnoreCase);
     public string CaptureStatus { get; private set; } = "監視開始";
@@ -23,6 +24,8 @@ public sealed class FaceCaptureMonitor(CaptureStore store, AgentSettings setting
         var tasks = new List<Task> { Guard(ScanLoop), Guard(ProcessLoop) };
         if (settings.AutoRegisterReferenceNumber)
             tasks.Add(Guard(new AutomaticReferenceRegistration(store, registration!).RunAsync));
+        if (settings.ReconcileReferenceNumber && verify is not null && registration is not null)
+            tasks.Add(Guard(new ReferenceReconciliation(store, registration, verify, settings.AutoRegisterReferenceNumber).RunAsync));
         await Task.WhenAll(tasks);
     }
     public static bool TryTimestamp(string name, out DateTime timestamp)

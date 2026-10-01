@@ -39,7 +39,8 @@ public sealed class FileICallBridgeClient(string bridgeDirectory)
             {
                 var response = JsonSerializer.Deserialize<BridgeResponse>(await File.ReadAllTextAsync(responsePath, ct), AppSettings.Json)
                     ?? throw new InvalidDataException("応答が空です。");
-                if (response.RequestId != request.RequestId || response.PatientId != request.PatientId ||
+                string? expectedPatientId = request.Action == "find_candidates" ? null : request.PatientId;
+                if (response.RequestId != request.RequestId || response.PatientId != expectedPatientId ||
                     response.RequestFingerprint != request.Fingerprint())
                     throw new InvalidDataException("要求と応答が一致しません。");
                 return response;

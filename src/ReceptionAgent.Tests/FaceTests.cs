@@ -39,6 +39,18 @@ internal static class FaceTests
         try { DynamicsBirthdate.Parse("3", 6, 10, 21); check(false, "unknown era code"); }
         catch (InvalidDataException) { check(true, "numeric era not guessed"); }
         check(PatientNameMatcher.NormalizeKana(" がく　たろう ") == PatientNameMatcher.NormalizeKana("ｶﾞｸ ﾀﾛｳ"), "kana width, voiced marks, whitespace and hiragana normalized");
+        var smallKanaFace = face with { NameKana = "ｶﾒﾀﾞ ｼﾞﾕﾘ" };
+        var smallKanaPatient = new FacePatientCandidate("330", "試験患者", "ｶﾒﾀﾞ ｼﾞｭﾘ", face.Birthdate);
+        check(PatientNameMatcher.Match(smallKanaFace, [smallKanaPatient]).Single().PatientId == "33",
+            "XML full-size kana matches chart small kana with exact birthday");
+        check(PatientNameMatcher.NormalizeKanaForMatching("ぁぃぅぇぉゃゅょっゎヵヶ") == "アイウエオヤユヨツワカケ",
+            "small kana variants normalize after hiragana conversion");
+        check(PatientNameMatcher.Match(smallKanaFace, [smallKanaPatient with { Birthdate = face.Birthdate.AddDays(1) },
+            smallKanaPatient with { NameKana = "カメダ シュリ" }]).Count == 0,
+            "relaxed kana still requires exact birthday and voiced marks");
+        var colliding = PatientNameMatcher.Match(smallKanaFace, [smallKanaPatient, smallKanaPatient with { RawChartNo = "440", NameKana = "カメダ ジユリ" }]);
+        check(colliding.Count == 2 && PatientInsuranceMatcher.Resolve(colliding, null, []).Selected is null,
+            "small kana collision never prefers exact spelling over another patient");
         var rows = new[] { new FacePatientCandidate("110", "試験太郎", "テスト　タロウ", face.Birthdate), new FacePatientCandidate("117", "試験太郎", "ﾃｽﾄﾀﾛｳ", face.Birthdate) };
         var matches = PatientNameMatcher.Match(face, rows);
         check(matches.Count == 1 && matches[0].PatientId == "11" && matches[0].RawChartNumbers.Length == 2, "same patient's chart branches grouped as one patient");

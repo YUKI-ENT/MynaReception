@@ -32,6 +32,10 @@ public sealed class AgentSettingsForm : Form
         var autoRegister = new CheckBox { AutoSize = true, Checked = current.AutoRegisterReferenceNumber,
             Text = "Dynamicsでカルテ番号を取得した場合、照会番号を自動登録する" };
         layout.Controls.Add(autoRegister);
+        var reconcile = new CheckBox { AutoSize = true, Checked = current.ReconcileReferenceNumber,
+            Text = "当日の患者を低頻度でDynamics再検証する（自動登録ON時は照会番号も登録・訂正）" };
+        layout.Controls.Add(reconcile);
+        layout.Controls.Add(new Label { AutoSize = true, Text = "再検証は監視中の当日保存済みXMLが対象。取込5分後から、氏名・生年月日・保険情報を2回確認します。" });
         layout.Controls.Add(new Label { AutoSize = true, Text = "設定変更は次回監視開始後に取り込むXMLへ適用します。登録結果は一覧で確認できます。" });
         layout.Controls.Add(new Label { AutoSize = true, Text = "XML取得・患者照合・予約検索は自動です。来院確認・連携は一覧から手動で要求します。照会番号登録は手動、または上記設定で自動です。\r\niCallManager側の「実操作を有効化」も必要です。自動取込はファイル名の日付が当日のXMLです。" });
         var buttons = new FlowLayoutPanel { AutoSize = true, Dock = DockStyle.Top, FlowDirection = FlowDirection.RightToLeft };
@@ -42,7 +46,7 @@ public sealed class AgentSettingsForm : Form
             try
             {
                 new AgentSettings { OqsRoot = oqs.Text, FaceXmlDirectory = face.Text, FaceTrashDirectory = trash.Text,
-                    AutoRegisterReferenceNumber = autoRegister.Checked, ICallRequestDirectory = request.Text, ICallResponseDirectory = response.Text, MarkArrived = false, LinkReservation = false,
+                    AutoRegisterReferenceNumber = autoRegister.Checked, ReconcileReferenceNumber = reconcile.Checked, ICallRequestDirectory = request.Text, ICallResponseDirectory = response.Text, MarkArrived = false, LinkReservation = false,
                     FaceEncoding = encoding.SelectedIndex == 0 ? Face.FaceXmlEncoding.Utf8 : Face.FaceXmlEncoding.ShiftJis }.Save(MainForm.DataDirectory);
                 DialogResult = DialogResult.OK;
             }

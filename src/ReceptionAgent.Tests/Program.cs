@@ -79,6 +79,8 @@ await DynamicsTests.Run(Check);
 await FaceTests.Run(Check);
 FaceInsuranceTests.Run(Check);
 await CaptureTests.Run(Check);
+CaptureDateTests.Run(Check);
 await SingleRegistrationTests.Run(Check);
 await AutomaticRegistrationTests.Run(Check);
+await ReconciliationTests.Run(Check);
 Console.WriteLine($"All {checks} checks passed (synthetic data only).");

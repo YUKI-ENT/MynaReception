@@ -113,8 +113,9 @@ public sealed class FileBridge : IDisposable
     }
 
     private static BridgeResponse Response(BridgeRequest request, OperationResult result) =>
-        new(request.RequestId, result.Success, result.Code, result.Message, request.PatientId,
-            result.Reservation?.ReceptionNo, result.Reservation?.PatientName, DateTimeOffset.Now, request.Fingerprint());
+        new(request.RequestId, result.Success, result.Code, result.Message, request.Action == "find_candidates" ? null : request.PatientId,
+            result.Reservation?.ReceptionNo, result.Reservation?.PatientName, DateTimeOffset.Now, request.Fingerprint())
+        { Candidates = result.Candidates };
 
     private static void WriteAtomic<T>(string path, T value)
     {
