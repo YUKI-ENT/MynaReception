@@ -58,7 +58,17 @@ public sealed class ReceptionWorkflow(CaptureStore store, Func<FaceIdentity, Can
                     var referencePatient = FaceReferencePatient.Resolve(record.Face);
                     record.Lookup = referencePatient ?? await lookup(record.Face, token);
                     record.PatientIdentifiedByDynamics = referencePatient is null && record.Lookup.Selected is not null;
-                    if (record.Lookup.Selected is null) throw new InvalidDataException("患者を特定できません: " + record.Lookup.Message);
+                    if (record.Lookup.Selected is null)
+                    {
+                        if (record.Lookup.Candidates.Count != 0) throw new InvalidDataException("患者を特定できません: " + record.Lookup.Message);
+                        record.ChartNumberFoundAtReception = false;
+                        record.PendingRequest = new("ra-" + record.Id + "-find_candidates", "find_candidates", "")
+                        { PatientName = string.IsNullOrWhiteSpace(record.Face.PatientName) ? null : record.Face.PatientName,
+                            NameKana = record.Face.NameKana, Birthdate = record.Face.Birthdate.ToString("yyyy-MM-dd") };
+                        record.Stage = CaptureStage.CandidateFindWaiting; record.Status = "カルテ一致なし／氏名・生年月日で予約照会中";
+                        break;
+                    }
+                    record.ChartNumberFoundAtReception = true;
                     record.Stage = CaptureStage.PatientIdentified; record.Status = "患者ID取得済み";
                     break;
                 case CaptureStage.PatientIdentified:
@@ -70,6 +80,7 @@ public sealed class ReceptionWorkflow(CaptureStore store, Func<FaceIdentity, Can
                     Complete(record);
                     break;
                 case CaptureStage.FindWaiting:
+                case CaptureStage.CandidateFindWaiting:
                 case CaptureStage.ArrivedWaiting:
                 case CaptureStage.LinkWaiting:
                     var request = record.PendingRequest ?? throw new InvalidDataException("保存済み要求がありません。");
@@ -78,6 +89,19 @@ public sealed class ReceptionWorkflow(CaptureStore store, Func<FaceIdentity, Can
                     // The request was committed in the preceding step, before any external write.
                     var response = await new ICallFileClient().SendAsync(request, record.RequestDirectory, record.ResponseDirectory, TimeSpan.FromSeconds(request.Action == "link" ? 20 : 2), token);
                     record.Responses.Add(response);
+                    if (request.Action == "find_candidates")
+                    {
+                        ApplyCandidateResponse(record, response);
+                        record.PendingRequest = null;
+                        break;
+                    }
+                    if (request.Action == "find" && !response.Success && response.Code == "not_found")
+                    {
+                        record.ReservationFoundAtReception = false; record.ReceptionClassifiedAt = DateTimeOffset.Now;
+                        record.Stage = CaptureStage.Completed; record.Status = "カルテ番号取得済み／現在のiCall一覧に予約なし";
+                        record.PendingRequest = null;
+                        break;
+                    }
                     if (request.Action == "arrived") record.ArrivalResult = response.Code + ": " + response.Message;
                     if (request.Action == "link") record.LinkResult = response.Code + ": " + response.Message;
                     if (!response.Success) throw new InvalidDataException("iCall " + response.Code + ": " + response.Message);
@@ -86,6 +110,7 @@ public sealed class ReceptionWorkflow(CaptureStore store, Func<FaceIdentity, Can
                         if (response.Code != "found" || string.IsNullOrWhiteSpace(response.ReceptionNo) || string.IsNullOrWhiteSpace(response.PatientName))
                             throw new InvalidDataException("予約取得応答の内容が不正です。");
                         record.ReceptionNo = response.ReceptionNo; record.ReservationPatientName = response.PatientName;
+                        record.ReservationFoundAtReception = true; record.ReceptionClassifiedAt = DateTimeOffset.Now;
                         record.Stage = CaptureStage.ReservationFound; record.Status = "予約番号取得済み";
                     }
                     else
@@ -114,4 +139,24 @@ public sealed class ReceptionWorkflow(CaptureStore store, Func<FaceIdentity, Can
     }
     private static void Complete(CaptureRecord record)
     { record.Stage = CaptureStage.Completed; record.Status = "予約番号取得完了／来院確認・連携は手動操作"; }
+    private static void ApplyCandidateResponse(CaptureRecord record, ICallResponse response)
+    {
+        if (!response.Success || response.Candidates is null || response.Code is not ("candidates_found" or "no_candidates"))
+            throw new InvalidDataException("予約候補の照会に失敗: " + response.Code + "／" + response.Message);
+        if (response.Code == "no_candidates" && response.Candidates.Count == 0)
+        {
+            record.ReservationFoundAtReception = false;
+            record.Status = "カルテ一致なし／現在の一覧に氏名・生年月日の予約候補なし";
+        }
+        else if (response.Code == "candidates_found" && response.Candidates.Count == 1 && response.Candidates[0] is { NameMatch: "full_name", PatientId: null } candidate &&
+            !string.IsNullOrWhiteSpace(candidate.ReceptionNo) && candidate.Birthdate == record.Face?.Birthdate.ToString("yyyy-MM-dd"))
+        {
+            record.ReceptionNo = candidate.ReceptionNo; record.ReservationPatientName = candidate.PatientName;
+            record.ReservationFoundAtReception = true;
+            record.Status = "カルテ一致なし／氏名・生年月日が一致する予約候補あり・本人確認が必要";
+        }
+        else throw new InvalidDataException("予約候補の本人確認が必要（複数候補・氏名不一致・カルテ番号の不整合）。");
+        record.ReceptionClassifiedAt = DateTimeOffset.Now;
+        record.Stage = CaptureStage.Completed;
+    }
 }

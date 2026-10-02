@@ -60,7 +60,7 @@ public sealed class MainForm : Form
             try
             {
                 var config = AgentSettings.Load(DataDirectory); config.ValidateMonitoring();
-                cancellation = new CancellationTokenSource(); monitor = new FaceCaptureMonitor(store, config, DynamicsFacePatientFinder.FindAsync, registration, DynamicsFacePatientFinder.VerifyAsync);
+                cancellation = new CancellationTokenSource(); monitor = new FaceCaptureMonitor(store, config, DynamicsFacePatientFinder.FindAsync, registration, DynamicsQualificationResultFinder.FindAsync);
                 start.Enabled = settings.Enabled = false; stop.Enabled = true;
                 await Task.Run(() => monitor.RunAsync(cancellation.Token));
             }
@@ -149,20 +149,41 @@ public sealed class MainForm : Form
         if (revision == next) return;
         string? selected = grid.CurrentRow?.Cells["ID"].Value as string;
         records = rows; revision = next;
-        grid.DataSource = rows.Select(r => new { ID = r.Id, 状態 = r.Conflict ? "同名XMLの内容競合・停止" : r.Status,
+        grid.DataSource = rows.Select(r => new { ID = r.Id,
             患者ID = r.Lookup?.Selected?.PatientId, 内部カルテ番号 = string.Join(",", r.Lookup?.Selected?.RawChartNumbers ?? []), 予約番号 = r.ReceptionNo,
             氏名 = !string.IsNullOrWhiteSpace(r.Lookup?.Selected?.Name) ? r.Lookup.Selected.Name :
                 !string.IsNullOrWhiteSpace(r.ReservationPatientName) ? r.ReservationPatientName : r.XmlPatientName, フリガナ = r.Face?.NameKana, 生年月日 = r.Face?.Birthdate.ToString("yyyy/MM/dd"),
+            受付分類 = ReceptionClassification.Label(r.ReceptionCategory), 取得時間 = ReceptionClassification.FormatTime(r),
             保険者番号 = r.Face?.Insurance?.InsurerNumber, 記号 = r.Face?.Insurance?.Symbol, 番号 = r.Face?.Insurance?.Number, 枝番 = r.Face?.Insurance?.Branch,
-            来院確認 = r.ArrivalResult, 連携 = r.LinkResult, 照会番号 = r.Face?.ReferenceNumber, 照会番号登録 = RegistrationStatus(r, jobs[r.Id]), ファイル名 = r.FileName, ファイル作成日時 = r.FileCreatedAt?.ToLocalTime().ToString("yyyy/MM/dd HH:mm:ss"),
+            来院確認 = r.ArrivalResult, 連携 = r.LinkResult, 照会番号 = r.Face?.ReferenceNumber, 照会番号登録 = RegistrationStatus(r, jobs[r.Id]),
+            状態 = r.Conflict ? "同名XMLの内容競合・停止" : r.Status, ファイル名 = r.FileName, ファイル作成日時 = r.FileCreatedAt?.ToLocalTime().ToString("yyyy/MM/dd HH:mm:ss"),
             再検証カルテ番号 = r.VerifiedPatientId, 再検証 = r.ReconciliationStatus,
             XML生成日時 = r.GeneratedAt.ToString("yyyy/MM/dd HH:mm:ss"), 取得日時 = r.CapturedAt.ToString("yyyy/MM/dd HH:mm:ss") }).ToList();
         foreach (string column in new[] { "ID", "内部カルテ番号", "保険者番号", "記号", "番号", "枝番" })
             if (grid.Columns[column] is { } hidden) hidden.Visible = false;
         if (grid.Columns["患者ID"] is { } patientColumn) patientColumn.HeaderText = "カルテ番号";
+        string[] columnOrder = ["患者ID", "予約番号", "氏名", "フリガナ", "生年月日", "受付分類", "取得時間", "来院確認", "連携", "照会番号", "照会番号登録", "状態", "ファイル名", "ファイル作成日時", "XML生成日時", "取得日時", "再検証カルテ番号", "再検証"];
+        for (int i = 0; i < columnOrder.Length; i++)
+            if (grid.Columns[columnOrder[i]] is { } column) column.DisplayIndex = i;
         foreach (DataGridViewRow row in grid.Rows)
         {
             if (row.Cells["ID"].Value is not string id || !jobs.TryGetValue(id, out var job)) continue;
+            var record = rows.First(r => r.Id == id);
+            var classificationCell = row.Cells["受付分類"];
+            classificationCell.Style.BackColor = record.ReceptionCategory switch
+            {
+                ReceptionCategory.ReturningWithReservation => Color.Honeydew,
+                ReceptionCategory.ReturningWithoutReservation => Color.LightCyan,
+                ReceptionCategory.NewWithReservation => Color.LemonChiffon,
+                ReceptionCategory.NewWithoutReservation => Color.PeachPuff,
+                ReceptionCategory.NeedsReview => Color.MistyRose,
+                _ => Color.Gainsboro
+            };
+            classificationCell.Style.ForeColor = Color.Black;
+            classificationCell.Style.SelectionBackColor = classificationCell.Style.BackColor;
+            classificationCell.Style.SelectionForeColor = Color.Black;
+            classificationCell.ToolTipText = "初診・再診は受付時のカルテ番号の取得有無による分類です。受診歴の断定ではありません。予約なしは現在のiCall一覧での検索結果です。カルテなしの予約ありは本人確認が必要です。";
+            row.Cells["取得時間"].ToolTipText = $"XML生成日時（ファイル名）から受付分類確定まで。確定日時: {ReceptionClassification.ClassifiedAt(record)?.ToLocalTime():yyyy/MM/dd HH:mm:ss.fff}。照会番号登録・後日の再検証時間は含みません。";
             var cell = row.Cells["照会番号登録"];
             cell.ToolTipText = job is null ? rows.First(r => r.Id == id).AutomaticRegistrationError : $"{job.Message}\r\n処理結果: {job.ProcessingResultStatus}\r\nエラー: {job.ErrorCode} {job.ErrorMessage}\r\n結果: {job.ProcessingResultCode} {job.ProcessingResultMessage}";
             cell.Style.BackColor = job?.State switch

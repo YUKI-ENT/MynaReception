@@ -107,7 +107,7 @@ internal static class CaptureTests
             RequestDirectory = settings.ICallRequestDirectory, ResponseDirectory = settings.ICallResponseDirectory, MarkArrived = true, LinkReservation = true };
         store.Capture(next, Encoding.UTF8.GetBytes(sample));
         await workflow.StepAsync(next, default); await workflow.StepAsync(next, default); await Reply(next, false, "not_found"); await workflow.StepAsync(next, default);
-        check(next.Stage == CaptureStage.NeedsReview && next.ArrivalResult == "未要求" && next.Responses.Count == 1, "no reservation is retained for review without operations");
+        check(next.Stage == CaptureStage.Completed && next.ReservationFoundAtReception == false && next.ArrivalResult == "未要求" && next.Responses.Count == 1, "confirmed no reservation completes classification without operations");
         next.Stage = CaptureStage.Captured; next.PendingRequest = null;
         await new ReceptionWorkflow(store, (f, t) => Task.FromResult(new FaceLookupResult([selected, selected with { PatientId = "22" }], null, true, "特定できず"))).StepAsync(next, default);
         check(next.Stage == CaptureStage.NeedsReview && next.Lookup?.Candidates.Count == 2 && next.PendingRequest is null, "ambiguous patient stored and never sent to iCall");

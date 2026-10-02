@@ -4,7 +4,11 @@ namespace ReceptionAgent.Face;
 
 public sealed record FaceInsurance(string? InsurerNumber, string? Symbol, string? Number, string? Branch);
 public sealed record FaceInsuranceCandidate(string RawChartNo, FaceInsurance Insurance);
-public sealed record FaceLookupResult(IReadOnlyList<FacePatientMatch> Candidates, FacePatientMatch? Selected, bool InsuranceChecked, string Message);
+public enum PatientVerificationSource { NameAndInsurance, QualificationResults }
+public sealed record FaceLookupResult(IReadOnlyList<FacePatientMatch> Candidates, FacePatientMatch? Selected, bool InsuranceChecked, string Message)
+{
+    public PatientVerificationSource VerificationSource { get; init; }
+}
 
 public static class PatientInsuranceMatcher
 {

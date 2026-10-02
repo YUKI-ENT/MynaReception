@@ -25,7 +25,7 @@ public sealed class FaceCaptureMonitor(CaptureStore store, AgentSettings setting
         if (settings.AutoRegisterReferenceNumber)
             tasks.Add(Guard(new AutomaticReferenceRegistration(store, registration!).RunAsync));
         if (settings.ReconcileReferenceNumber && verify is not null && registration is not null)
-            tasks.Add(Guard(new ReferenceReconciliation(store, registration, verify, settings.AutoRegisterReferenceNumber).RunAsync));
+            tasks.Add(Guard(new ReferenceReconciliation(store, registration, verify, settings.AutoRegisterReferenceNumber, useQualificationResults: true).RunAsync));
         await Task.WhenAll(tasks);
     }
     public static bool TryTimestamp(string name, out DateTime timestamp)

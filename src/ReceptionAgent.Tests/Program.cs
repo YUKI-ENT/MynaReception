@@ -83,4 +83,6 @@ CaptureDateTests.Run(Check);
 await SingleRegistrationTests.Run(Check);
 await AutomaticRegistrationTests.Run(Check);
 await ReconciliationTests.Run(Check);
+await QualificationResultTests.Run(Check);
+await ReceptionClassificationTests.Run(Check);
 Console.WriteLine($"All {checks} checks passed (synthetic data only).");

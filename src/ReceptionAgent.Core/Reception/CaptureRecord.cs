@@ -3,7 +3,7 @@ using ReceptionAgent.ICall;
 
 namespace ReceptionAgent.Reception;
 
-public enum CaptureStage { Captured, PatientIdentified, FindWaiting, ReservationFound, ArrivedWaiting, LinkReady, LinkWaiting, Completed, NeedsReview }
+public enum CaptureStage { Captured, PatientIdentified, FindWaiting, ReservationFound, ArrivedWaiting, LinkReady, LinkWaiting, Completed, NeedsReview, CandidateFindWaiting }
 
 public sealed class CaptureRecord
 {
@@ -36,6 +36,8 @@ public sealed class CaptureRecord
     public bool ReconciliationIdentityMismatch { get; set; }
     public string ReconciliationStatus { get; set; } = "未検証";
     public int ReconciliationChecks { get; set; }
+    public bool QualificationReconciliationStarted { get; set; }
+    public bool QualificationReconciliationCompleted { get; set; }
     public bool MarkArrived { get; set; }
     public bool LinkReservation { get; set; }
     public bool ManualOperationRequested { get; set; }
@@ -45,5 +47,10 @@ public sealed class CaptureRecord
     public string ArrivalResult { get; set; } = "未要求";
     public string LinkResult { get; set; } = "未要求";
     public List<ICallResponse> Responses { get; set; } = [];
+    public bool? ChartNumberFoundAtReception { get; set; }
+    public bool? ReservationFoundAtReception { get; set; }
+    public DateTimeOffset? ReceptionClassifiedAt { get; set; }
+    [System.Text.Json.Serialization.JsonIgnore]
+    public ReceptionCategory ReceptionCategory => ReceptionClassification.Category(this);
     public bool Conflict { get; set; }
 }

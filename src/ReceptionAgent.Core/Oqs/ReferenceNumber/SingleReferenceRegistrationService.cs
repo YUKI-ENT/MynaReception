@@ -80,12 +80,13 @@ public sealed class SingleReferenceRegistrationService(string directory, TimeSpa
     }
     public async Task<SingleReferenceRegistrationJob> RegisterVerifiedAsync(CaptureRecord record, Face.FaceLookupResult verified, string oqsRoot, CancellationToken token)
     {
-        if (!verified.InsuranceChecked || verified.Selected is not { } patient || verified.Candidates.Count != 1 ||
+        bool qualified = verified.VerificationSource == Face.PatientVerificationSource.QualificationResults;
+        if ((!qualified && !verified.InsuranceChecked) || verified.Selected is not { } patient || verified.Candidates.Count != 1 ||
             verified.Candidates[0] != patient || record.Face is not { } face || record.Conflict ||
             record.GeneratedAt.Date != DateTime.Today || patient.Birthdate != face.Birthdate ||
             Face.PatientNameMatcher.NormalizeKanaForMatching(patient.NameKana) != Face.PatientNameMatcher.NormalizeKanaForMatching(face.NameKana) ||
-            !Face.PatientInsuranceMatcher.IsUsable(face.Insurance))
-            throw new InvalidDataException("当日XMLとDynamicsの氏名・生年月日・保険情報の一意な再検証が必要です。");
+            (!qualified && !Face.PatientInsuranceMatcher.IsUsable(face.Insurance)))
+            throw new InvalidDataException("当日XMLの氏名・生年月日と、Dynamicsの一意な患者検証が必要です。");
         var snapshot = new CaptureRecord { Id = record.Id, Face = face with { ReferenceNumber = null }, Lookup = verified };
         await registrationGate.WaitAsync(token);
         try { return await RegisterCoreAsync(snapshot, oqsRoot, token, true, face.ReferenceNumber ?? "").ConfigureAwait(false); }

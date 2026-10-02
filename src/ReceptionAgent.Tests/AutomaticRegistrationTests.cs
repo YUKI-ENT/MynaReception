@@ -80,14 +80,14 @@ internal static class AutomaticRegistrationTests
                     }
                 }
                 received = store.List().SingleOrDefault();
-                if (received is not null && received.Stage == CaptureStage.NeedsReview &&
+                if (received is not null && received.Stage == CaptureStage.Completed &&
                     registration.Load(received.Id)?.State == ReferenceRegistrationState.Completed) break;
                 await Task.Delay(100, stop.Token);
             }
             check(lookups == 1 && received!.PatientIdentifiedByDynamics && received.AutoRegisterReferenceNumber &&
                 received.RegistrationOqsRoot == settings.OqsRoot && received.AutomaticRegistrationAttempted,
                 "monitor snapshots auto setting and triggers registration after Dynamics lookup");
-            check(received!.ReceptionNo == "" && received.Status.Contains("not_found") &&
+            check(received!.ReceptionNo == "" && received.ReservationFoundAtReception == false &&
                 registration.Load(received.Id)!.State == ReferenceRegistrationState.Completed,
                 "reservation not_found does not prevent successful automatic OQS registration");
             check(received.ArrivalResult == "未要求" && received.LinkResult == "未要求" &&

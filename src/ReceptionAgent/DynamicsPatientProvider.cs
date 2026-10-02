@@ -17,9 +17,11 @@ internal sealed class DynamicsPatientProvider(string branchField, bool removeLas
     {
         using var patient = await DynamicsComReader.ReadAsync("SELECT * FROM [患者マスター] WHERE 1=0", CancellationToken.None);
         using var insurance = await DynamicsComReader.ReadAsync("SELECT * FROM [患者保険マスター] WHERE 1=0", CancellationToken.None);
+        using var qualification = await DynamicsComReader.ReadAsync("SELECT * FROM [WKO資格確認結果表示] WHERE 1=0", CancellationToken.None);
         string Fields(DataTable t) => string.Join("\r\n", t.Columns.Cast<DataColumn>().Select(c => $"  {c.ColumnName}  (DAO型 {c.ExtendedProperties["DaoType"]})"));
         return "Dynamics COM接続：成功\r\n患者マスターフォーム：開いています\r\n患者データの読み取り：0件（項目定義のみ）\r\n\r\nフォームRecordSource:\r\n" + patient.ExtendedProperties["RecordSource"] +
-            "\r\n\r\n患者マスターの項目:\r\n" + Fields(patient) + "\r\n\r\n患者保険マスターの項目:\r\n" + Fields(insurance);
+            "\r\n\r\n患者マスターの項目:\r\n" + Fields(patient) + "\r\n\r\n患者保険マスターの項目:\r\n" + Fields(insurance) +
+            "\r\n\r\nWKO資格確認結果表示の項目:\r\n" + Fields(qualification);
     }
     public async Task ValidateAsync(CancellationToken token)
     {

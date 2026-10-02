@@ -7,17 +7,30 @@ namespace ReceptionAgent.ICall;
 // Property order and serializer options are part of iCallManager's request fingerprint contract.
 public sealed record ICallRequest(string RequestId, string Action, string PatientId, string? ExpectedReceptionNo = null, string? ExpectedPatientName = null)
 {
+    [System.Text.Json.Serialization.JsonIgnore(Condition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull)]
+    public string? PatientName { get; init; }
+    [System.Text.Json.Serialization.JsonIgnore(Condition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull)]
+    public string? NameKana { get; init; }
+    [System.Text.Json.Serialization.JsonIgnore(Condition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull)]
+    public string? GivenName { get; init; }
+    [System.Text.Json.Serialization.JsonIgnore(Condition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull)]
+    public string? Birthdate { get; init; }
     public string Fingerprint() => Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(JsonSerializer.Serialize(this, ICallFileClient.Json))));
 }
 public sealed record ICallResponse(string RequestId, bool Success, string Code, string Message, string? PatientId, string? ReceptionNo,
-    string? PatientName, DateTimeOffset CompletedAt, string RequestFingerprint = "");
+    string? PatientName, DateTimeOffset CompletedAt, string RequestFingerprint = "")
+{
+    public IReadOnlyList<ICallReservationCandidate>? Candidates { get; init; }
+}
+public sealed record ICallReservationCandidate(string ReceptionNo, string? PatientId, string PatientName,
+    string ParsedName, string Birthdate, string NameMatch, bool RequiresConfirmation = true);
 
 public sealed class ICallFileClient
 {
     public static JsonSerializerOptions Json { get; } = new(JsonSerializerDefaults.Web) { WriteIndented = true };
     public async Task<ICallResponse> SendAsync(ICallRequest request, string requestDirectory, string responseDirectory, TimeSpan timeout, CancellationToken token)
     {
-        if (!System.Text.RegularExpressions.Regex.IsMatch(request.RequestId, @"\Ara-[a-f0-9]{32}-(find|arrived|link)\z"))
+        if (!System.Text.RegularExpressions.Regex.IsMatch(request.RequestId, @"\Ara-[a-f0-9]{32}-(find|find_candidates|arrived|link)\z"))
             throw new ArgumentException("ReceptionAgentのrequestIdが不正です。");
         if (!Directory.Exists(requestDirectory) || !Directory.Exists(responseDirectory)) throw new DirectoryNotFoundException("iCallManagerのrequest/responseフォルダーを確認してください。");
         string requestPath = Path.Combine(requestDirectory, request.RequestId + ".json"), responsePath = Path.Combine(responseDirectory, request.RequestId + ".json");
@@ -44,7 +57,8 @@ public sealed class ICallFileClient
             try
             {
                 var response = await ReadAsync<ICallResponse>(responsePath, token);
-                if (response.RequestId != request.RequestId || response.PatientId != request.PatientId || response.RequestFingerprint != request.Fingerprint())
+                string? expectedPatientId = request.Action == "find_candidates" ? null : request.PatientId;
+                if (response.RequestId != request.RequestId || response.PatientId != expectedPatientId || response.RequestFingerprint != request.Fingerprint())
                     throw new InvalidDataException("iCallManagerの応答が要求と一致しません。");
                 return response;
             }
