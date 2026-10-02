@@ -8,5 +8,6 @@
   </PropertyGroup>
   <ItemGroup>
     <ProjectReference Include="..\ReceptionAgent.Core\ReceptionAgent.Core.csproj" />
+    <ProjectReference Include="..\ReceptionAgent.Web\ReceptionAgent.Web.csproj" />
   </ItemGroup>
 </Project>

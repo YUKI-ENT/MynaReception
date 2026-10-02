@@ -25,7 +25,7 @@ internal static class QualificationResultTests
             "invalid chart among matching WKO rows prevents false uniqueness");
         string root = Path.Combine(Path.GetTempPath(), "ReceptionAgent-wko-" + Guid.NewGuid().ToString("N"));
         var store = new CaptureStore(root);
-        var now = DateTimeOffset.Now;
+        var now = new DateTimeOffset(DateTime.Today.AddHours(10));
         string xml = "<XmlMsg><MessageHeader><MedicalInstitutionCode>0110012345</MedicalInstitutionCode><SegmentOfResult>1</SegmentOfResult></MessageHeader><MessageBody><ProcessingResultStatus>1</ProcessingResultStatus><ResultList><ResultOfQualificationConfirmation><NameKana>ｶﾒﾀﾞ ｼﾞﾕﾘ</NameKana><Birthdate>20000101</Birthdate><ReferenceNumber>11</ReferenceNumber></ResultOfQualificationConfirmation></ResultList></MessageBody></XmlMsg>";
         var record = new CaptureRecord { FileName = "wko.xml", ContentHash = "synthetic", Face = face, Encoding = FaceXmlEncoding.Utf8,
             GeneratedAt = now.LocalDateTime, CapturedAt = now.AddMinutes(-10), Stage = CaptureStage.Completed,

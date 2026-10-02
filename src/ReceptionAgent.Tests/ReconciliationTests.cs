@@ -13,7 +13,7 @@ internal static class ReconciliationTests
         Directory.CreateDirectory(Path.Combine(oqs, "req")); Directory.CreateDirectory(Path.Combine(oqs, "res"));
         var store = new CaptureStore(Path.Combine(root, "db"));
         var service = new SingleReferenceRegistrationService(jobs, TimeSpan.FromMilliseconds(150));
-        var now = DateTimeOffset.Now;
+        var now = new DateTimeOffset(DateTime.Today.AddHours(10));
         string xml = "<XmlMsg><MessageHeader><MedicalInstitutionCode>0110012345</MedicalInstitutionCode><SegmentOfResult>1</SegmentOfResult></MessageHeader><MessageBody><ProcessingResultStatus>1</ProcessingResultStatus><ResultList><ResultOfQualificationConfirmation><NameKana>テスト</NameKana><Birthdate>20000101</Birthdate><ReferenceNumber>99</ReferenceNumber><InsurerNumber>12345678</InsurerNumber><InsuredIdentificationNumber>001</InsuredIdentificationNumber><InsuredBranchNumber>00</InsuredBranchNumber></ResultOfQualificationConfirmation></ResultList></MessageBody></XmlMsg>";
         var face = FaceXmlParser.Parse(Encoding.UTF8.GetBytes(xml), FaceXmlEncoding.Utf8);
         var patient = new FacePatientMatch("11", "試験患者", "テスト", face.Birthdate, ["110"]);

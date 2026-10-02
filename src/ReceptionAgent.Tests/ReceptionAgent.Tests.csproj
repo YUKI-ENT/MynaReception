@@ -7,6 +7,7 @@
   </PropertyGroup>
   <ItemGroup>
     <ProjectReference Include="..\ReceptionAgent.Core\ReceptionAgent.Core.csproj" />
+    <ProjectReference Include="..\ReceptionAgent.Web\ReceptionAgent.Web.csproj" />
     <Compile Include="..\..\Core\Contracts.cs" Link="ICallContracts.cs" />
     <Compile Include="..\..\Core\AppSettings.cs" Link="ICallSettings.cs" />
   </ItemGroup>

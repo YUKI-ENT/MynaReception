@@ -27,8 +27,12 @@ public sealed class MainForm : Form
     private bool busy;
     private IReadOnlyList<CaptureRecord> records = [];
     private string? revision;
+    private volatile bool monitoringAvailable;
+    private readonly Kiosk.KioskSessions kioskSessions;
+    private Web.KioskWebServer? kioskServer;
     public MainForm()
     {
+        kioskSessions = new Kiosk.KioskSessions(Path.Combine(DataDirectory, "Kiosk"), store, () => Kiosk.KioskOptions.Load(DataDirectory), () => monitoringAvailable);
         Text = "ReceptionAgent — 受付ステータス"; StartPosition = FormStartPosition.CenterScreen;
         Size = new Size(1280, 720); MinimumSize = new Size(960, 550);
         var layout = new TableLayoutPanel { Dock = DockStyle.Fill, Padding = new Padding(16), ColumnCount = 1, RowCount = 5 };
@@ -62,20 +66,23 @@ public sealed class MainForm : Form
                 var config = AgentSettings.Load(DataDirectory); config.ValidateMonitoring();
                 cancellation = new CancellationTokenSource(); monitor = new FaceCaptureMonitor(store, config, DynamicsFacePatientFinder.FindAsync, registration, DynamicsQualificationResultFinder.FindAsync);
                 start.Enabled = settings.Enabled = false; stop.Enabled = true;
+                monitoringAvailable = true;
                 await Task.Run(() => monitor.RunAsync(cancellation.Token));
             }
             catch (OperationCanceledException) { status.Text = "監視を停止しました。保存済みの未完了要求は次回開始時に再確認します。"; }
             catch (Exception ex) { status.Text = "監視停止: " + ex.Message; MessageBox.Show(this, status.Text, "監視を開始・継続できません"); }
-            finally { cancellation?.Dispose(); cancellation = null; monitor = null; start.Enabled = settings.Enabled = true; stop.Enabled = false; Reload(); }
+            finally { monitoringAvailable = false; cancellation?.Dispose(); cancellation = null; monitor = null; start.Enabled = settings.Enabled = true; stop.Enabled = false; Reload(); }
         };
-        stop.Click += (_, _) => { cancellation?.Cancel(); stop.Enabled = false; status.Text = "停止しています…"; };
+        stop.Click += (_, _) => { monitoringAvailable = false; cancellation?.Cancel(); stop.Enabled = false; status.Text = "停止しています…"; };
         settings.Click += (_, _) => { try { using var dialog = new AgentSettingsForm(); dialog.ShowDialog(this); } catch (Exception ex) { MessageBox.Show(this, ex.Message); } };
         manual.Click += (_, _) => { using var dialog = new ManualLookupForm(); dialog.ShowDialog(this); };
         arrived.Click += async (_, _) => await RunSelectedAsync("arrived");
         link.Click += async (_, _) => await RunSelectedAsync("link");
         register.Click += async (_, _) => await RunSelectedAsync("register");
         grid.SelectionChanged += (_, _) => UpdateActions();
-        commands.Controls.AddRange([arrived, link, register, start, stop, settings, manual]);
+        var kiosk = new Button { Text = "Kioskコンソール", AutoSize = true };
+        kiosk.Click += (_, _) => { try { using var dialog = new KioskConsoleForm(kioskSessions, () => kioskServer?.Url ?? ""); dialog.ShowDialog(this); } catch (Exception ex) { MessageBox.Show(this, ex.Message); } };
+        commands.Controls.AddRange([arrived, link, register, start, stop, settings, manual, kiosk]);
         layout.Controls.Add(commands, 0, 4); Controls.Add(layout);
         grid.CellDoubleClick += (_, e) =>
         {
@@ -91,12 +98,19 @@ public sealed class MainForm : Form
         };
         refresh.Tick += async (_, _) => await RefreshAsync();
         Shown += (_, _) => { Reload(); refresh.Start(); };
+        Shown += async (_, _) =>
+        {
+            var server = new Web.KioskWebServer(kioskSessions, () => monitoringAvailable);
+            try { var options = Kiosk.KioskOptions.Load(DataDirectory); options.Validate(); await server.StartAsync(options.Port); if (IsDisposed) await server.DisposeAsync(); else kioskServer = server; }
+            catch (Exception ex) { await server.DisposeAsync(); status.Text = "Kiosk Webサーバー起動失敗: " + ex.Message; }
+        };
         FormClosing += (_, e) =>
         {
             if (cancellation is not null) { e.Cancel = true; cancellation.Cancel(); status.Text = "監視停止後に閉じてください。"; }
             else if (busy) { e.Cancel = true; status.Text = "手動要求の結果待ちです。処理終了後に閉じてください。"; }
         };
-        FormClosed += (_, _) => { refresh.Stop(); resultCancellation.Cancel(); refresh.Dispose(); resultCancellation.Dispose(); };
+        FormClosed += (_, _) => { monitoringAvailable = false; refresh.Stop(); resultCancellation.Cancel(); refresh.Dispose(); resultCancellation.Dispose();
+            kioskServer?.DisposeAsync().AsTask().GetAwaiter().GetResult(); };
     }
     private async Task RefreshAsync()
     {
