@@ -155,9 +155,17 @@ public static class RowParser
         foreach (var cells in table.Children.Chunk(width))
         {
             string no = CellText(cells[2]), id = CellText(cells[3]), name = CellText(cells[4]);
+            string waitingText = CellText(cells[0]);
+            int? waitingOrder = null;
+            if (waitingText != "-")
+            {
+                if (!Regex.IsMatch(waitingText, @"\A[1-9][0-9]*\z") ||
+                    !int.TryParse(waitingText, System.Globalization.NumberStyles.None, System.Globalization.CultureInfo.InvariantCulture, out int order))
+                    throw FlatLayoutError("待ち順の値を確認できません。");
+                waitingOrder = order;
+            }
             var numberLinks = cells[2].Descendants().Where(n => n.ControlType == 50005).ToArray();
-            if (!Regex.IsMatch(CellText(cells[0]), @"\A[1-9][0-9]*\z") ||
-                !Regex.IsMatch(CellText(cells[1]), @"\A(?:(?:[01][0-9]|2[0-3]):[0-5][0-9]|-)\z") ||
+            if (!Regex.IsMatch(CellText(cells[1]), @"\A(?:(?:[01][0-9]|2[0-3]):[0-5][0-9]|-)\z") ||
                 !Regex.IsMatch(no, @"\A[0-9]+\z") || numberLinks.Length != 1 || numberLinks[0].Name != no)
                 throw FlatLayoutError("待ち順・時刻・受付番号リンクの位置が一致しません。");
 
@@ -186,7 +194,7 @@ public static class RowParser
                 identified && link?.Enabled == true)
                 { HasMarkArrivedButton = arrival != null, HasLinkButton = link != null, LinkButtonName = link?.Name,
                   HasAssignmentButton = assignment != null, CanAssignDummy = id == "-" && (name == "-" || string.IsNullOrWhiteSpace(name)) && assignment?.Enabled == true,
-                  WaitingOrder = int.Parse(CellText(cells[0])) }, table, cells, arrival, link) { Assignment = assignment });
+                  WaitingOrder = waitingOrder }, table, cells, arrival, link) { Assignment = assignment });
         }
         if (result.Select(r => r.Reservation.ReceptionNo).Distinct().Count() != result.Count ||
             result.Where(r => r.Reservation.InternalId.Length > 0).GroupBy(r => r.Reservation.InternalId).Any(g => g.Count() > 1))

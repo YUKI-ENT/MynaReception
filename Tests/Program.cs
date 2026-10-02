@@ -47,6 +47,20 @@ linkedCell.Children.Add(new() { ControlType = 50000, AutomationId = "chk57760", 
 var linkedRow = RowParser.Parse(Table(header, Row(Cell("36"), Cell("00011"), Cell("テスト患者"), linkedCell)), new())[0].Reservation;
 Check(linkedRow.LinkButtonName == "〆" && linkedRow.InternalId == "57760", "ON button state belongs to verified patient and internal ID");
 Check(flatRows.Count == 2, "actual IE hierarchy: separate header and flat body parsed");
+var noWaitingOrder = FlatFixture();
+FlatTable(noWaitingOrder).Children[16] = Cell("-");
+var noWaitingRows = RowParser.Parse(noWaitingOrder, new());
+Check(noWaitingRows.Count == 2 && noWaitingRows[1].Reservation.WaitingOrder is null &&
+    noWaitingRows[1].Reservation.PatientId == flatRows[1].Reservation.PatientId &&
+    noWaitingRows[1].Reservation.ReceptionNo == flatRows[1].Reservation.ReceptionNo &&
+    noWaitingRows[1].Reservation.InternalId == flatRows[1].Reservation.InternalId &&
+    noWaitingRows[1].Arrival?.Key == flatRows[1].Arrival?.Key && noWaitingRows[1].Link?.Key == flatRows[1].Link?.Key,
+    "dash waiting order retains patient reservation and matching action buttons");
+foreach (var invalidOrder in new[] { "", "0", "-1", "不明", "2147483648" })
+{
+    var invalidWaiting = FlatFixture(); FlatTable(invalidWaiting).Children[0] = Cell(invalidOrder);
+    RejectFlat(invalidWaiting, "invalid waiting order rejected: " + invalidOrder);
+}
 Check(flatRows[1].Reservation.PatientId == "00011" && flatRows[1].Reservation.ReceptionNo == "102" &&
     flatRows[1].Reservation.PatientName == "テスト　患者", "flat table uses card column, never numeric memo column");
 Check(!flatRows[0].Reservation.HasPatientIdentity && !flatRows[0].Reservation.CanMarkArrived &&
