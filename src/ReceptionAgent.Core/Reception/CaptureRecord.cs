@@ -14,6 +14,11 @@ public sealed class CaptureRecord
     public DateTimeOffset? FileCreatedAt { get; set; }
     public DateTime GeneratedAt { get; set; }
     public DateTimeOffset CapturedAt { get; set; } = DateTimeOffset.Now;
+    public DateTimeOffset? FirstSeenAt { get; set; }
+    public double? PatientLookupMilliseconds { get; set; }
+    public DateTimeOffset? ICallStartedAt { get; set; }
+    public DateTimeOffset? ICallReceivedAt { get; set; }
+    public int ICallTimeoutCount { get; set; }
     public DateTimeOffset UpdatedAt { get; set; } = DateTimeOffset.Now;
     public DateTimeOffset RetryAfter { get; set; }
     public FaceXmlEncoding Encoding { get; set; }

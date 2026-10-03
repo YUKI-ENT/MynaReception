@@ -4,5 +4,6 @@
   <Project Path="src/ReceptionAgent.Core/ReceptionAgent.Core.csproj" />
   <Project Path="src/ReceptionAgent.Web/ReceptionAgent.Web.csproj" />
   <Project Path="src/ReceptionAgent.Tests/ReceptionAgent.Tests.csproj" />
+  <Project Path="src/ReceptionAgent.Windows.Tests/ReceptionAgent.Windows.Tests.csproj" />
   <Project Path="Tests/iCallManager.Tests.csproj" />
 </Solution>

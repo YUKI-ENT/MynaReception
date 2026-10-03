@@ -11,6 +11,7 @@ public sealed class FaceCaptureMonitor(CaptureStore store, AgentSettings setting
     Func<FaceIdentity, CancellationToken, Task<FaceLookupResult>>? verify = null)
 {
     private readonly ConcurrentDictionary<string, (long, DateTime)> seen = new(StringComparer.OrdinalIgnoreCase);
+    private readonly ConcurrentDictionary<string, DateTimeOffset> firstSeen = new(StringComparer.OrdinalIgnoreCase);
     public string CaptureStatus { get; private set; } = "監視開始";
     public async Task RunAsync(CancellationToken token)
     {
@@ -42,7 +43,11 @@ public sealed class FaceCaptureMonitor(CaptureStore store, AgentSettings setting
             {
                 try
                 {
+                    var enumeration = System.Diagnostics.Stopwatch.StartNew();
                     var paths = Directory.GetFiles(folder, "OQSsiquc01res_face_*.xml");
+                    if (enumeration.ElapsedMilliseconds >= 1000)
+                        store.Log("scan_slow", "", new { elapsedMs = enumeration.Elapsed.TotalMilliseconds, files = paths.Length,
+                            fromTrash = string.Equals(folder, settings.FaceTrashDirectory, StringComparison.OrdinalIgnoreCase) });
                     await Parallel.ForEachAsync(paths, new ParallelOptions { MaxDegreeOfParallelism = 4, CancellationToken = token }, async (path, ct) =>
                     {
                         if (!TryTimestamp(Path.GetFileName(path), out var time) || time.Date != DateTime.Today) return;
@@ -64,6 +69,7 @@ public sealed class FaceCaptureMonitor(CaptureStore store, AgentSettings setting
     }
     public async Task<bool> CaptureAsync(string path, DateTime generatedAt, CancellationToken token)
     {
+        var firstSeenAt = firstSeen.GetOrAdd(Path.GetFileName(path), _ => DateTimeOffset.Now);
         byte[]? previous = null;
         for (int attempt = 0; attempt < 8; attempt++)
         {
@@ -86,12 +92,18 @@ public sealed class FaceCaptureMonitor(CaptureStore store, AgentSettings setting
                     try { face = FaceXmlParser.Parse(bytes, settings.FaceEncoding); }
                     catch (System.Xml.XmlException) { previous = bytes; await Task.Delay(300, token); continue; }
                     catch (Exception ex) when (ex is InvalidDataException or System.Text.DecoderFallbackException or ArgumentException) { error = ex.Message; }
-                    return store.Capture(new CaptureRecord { FileName = Path.GetFileName(path), ContentHash = Convert.ToHexString(SHA256.HashData(bytes)),
+                    var record = new CaptureRecord { FirstSeenAt = firstSeenAt, FileName = Path.GetFileName(path), ContentHash = Convert.ToHexString(SHA256.HashData(bytes)),
                         SourcePath = actual, GeneratedAt = generatedAt, FileCreatedAt = new DateTimeOffset(created), Encoding = settings.FaceEncoding,
                         Face = face, XmlPatientName = face?.PatientName ?? "", RequestDirectory = settings.ICallRequestDirectory, ResponseDirectory = settings.ICallResponseDirectory,
                         AutoRegisterReferenceNumber = settings.AutoRegisterReferenceNumber, RegistrationOqsRoot = settings.OqsRoot,
                         MarkArrived = false, LinkReservation = false,
-                        Stage = error is null ? CaptureStage.Captured : CaptureStage.NeedsReview, Status = error ?? "XML取得済み" }, bytes);
+                        Stage = error is null ? CaptureStage.Captured : CaptureStage.NeedsReview, Status = error ?? "XML取得済み" };
+                    bool added = store.Capture(record, bytes);
+                    if (added) store.Log("xml_captured", record.Id, new { generatedAt, firstSeenAt, record.CapturedAt,
+                        generationToDiscoveryMs = (firstSeenAt - new DateTimeOffset(generatedAt)).TotalMilliseconds,
+                        readMs = (record.CapturedAt - firstSeenAt).TotalMilliseconds, attempt = attempt + 1, bytes = bytes.Length,
+                        fromTrash = string.Equals(actual, Path.Combine(settings.FaceTrashDirectory, Path.GetFileName(path)), StringComparison.OrdinalIgnoreCase) });
+                    return added;
                 }
                 previous = bytes;
             }

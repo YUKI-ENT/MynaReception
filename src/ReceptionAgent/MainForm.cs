@@ -6,7 +6,8 @@ namespace ReceptionAgent;
 public sealed class MainForm : Form
 {
     internal static string DataDirectory => Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "ReceptionAgent");
-    private readonly CaptureStore store = new(Path.Combine(DataDirectory, "Reception"));
+    private readonly CaptureStore store;
+    private readonly string dataDirectory;
     private readonly Label status = new() { AutoSize = true, Text = "設定でフォルダーを指定し、監視開始を押してください。" };
     private readonly DataGridView grid = new() { Dock = DockStyle.Fill, ReadOnly = true, AllowUserToAddRows = false, AllowUserToDeleteRows = false,
         RowHeadersVisible = false, BackgroundColor = SystemColors.Window, AutoSizeColumnsMode = DataGridViewAutoSizeColumnsMode.DisplayedCells,
@@ -17,7 +18,7 @@ public sealed class MainForm : Form
     private bool followToday = true;
     private CancellationTokenSource? cancellation;
     private FaceCaptureMonitor? monitor;
-    private readonly SingleReferenceRegistrationService registration = new(Path.Combine(DataDirectory, "SingleReferenceRegistration"), TimeSpan.FromSeconds(30));
+    private readonly SingleReferenceRegistrationService registration;
     private readonly Button arrived = new() { Text = "来院確認", AutoSize = true, Enabled = false };
     private readonly Button link = new() { Text = "連携", AutoSize = true, Enabled = false };
     private readonly Button register = new() { Text = "照会番号登録／結果再確認", AutoSize = true, Enabled = false };
@@ -30,9 +31,15 @@ public sealed class MainForm : Form
     private volatile bool monitoringAvailable;
     private readonly Kiosk.KioskSessions kioskSessions;
     private Web.KioskWebServer? kioskServer;
-    public MainForm()
+    private Task? monitorTask, webStartTask, refreshTask, manualTask, explorerTask;
+    private bool closing, closeReady, resourcesDisposed;
+    public MainForm() : this(DataDirectory) { }
+    internal MainForm(string dataDirectory)
     {
-        kioskSessions = new Kiosk.KioskSessions(Path.Combine(DataDirectory, "Kiosk"), store, () => Kiosk.KioskOptions.Load(DataDirectory), () => monitoringAvailable);
+        this.dataDirectory = dataDirectory;
+        store = new(Path.Combine(dataDirectory, "Reception"));
+        registration = new(Path.Combine(dataDirectory, "SingleReferenceRegistration"), TimeSpan.FromSeconds(30));
+        kioskSessions = new Kiosk.KioskSessions(Path.Combine(dataDirectory, "Kiosk"), store, () => Kiosk.KioskOptions.Load(dataDirectory), () => monitoringAvailable);
         Text = "ReceptionAgent — 受付ステータス"; StartPosition = FormStartPosition.CenterScreen;
         Size = new Size(1280, 720); MinimumSize = new Size(960, 550);
         var layout = new TableLayoutPanel { Dock = DockStyle.Fill, Padding = new Padding(16), ColumnCount = 1, RowCount = 5 };
@@ -60,25 +67,29 @@ public sealed class MainForm : Form
         var settings = new Button { Text = "設定", AutoSize = true }; var manual = new Button { Text = "手動患者検索（テスト）", AutoSize = true };
         start.Click += async (_, _) =>
         {
-            if (cancellation is not null) return;
+            if (closing || cancellation is not null) return;
             try
             {
-                var config = AgentSettings.Load(DataDirectory); config.ValidateMonitoring();
+                var config = AgentSettings.Load(dataDirectory); config.ValidateMonitoring();
                 cancellation = new CancellationTokenSource(); monitor = new FaceCaptureMonitor(store, config, DynamicsFacePatientFinder.FindAsync, registration, DynamicsQualificationResultFinder.FindAsync);
+                var activeMonitor = monitor; var token = cancellation.Token;
                 start.Enabled = settings.Enabled = false; stop.Enabled = true;
                 monitoringAvailable = true;
-                await Task.Run(() => monitor.RunAsync(cancellation.Token));
+                if (config.OpenResponseFolderOnMonitorStart)
+                    explorerTask = OpenResponseFolderAsync(config.ICallResponseDirectory, token);
+                monitorTask = Task.Run(() => activeMonitor.RunAsync(token));
+                await monitorTask;
             }
-            catch (OperationCanceledException) { status.Text = "監視を停止しました。保存済みの未完了要求は次回開始時に再確認します。"; }
-            catch (Exception ex) { status.Text = "監視停止: " + ex.Message; MessageBox.Show(this, status.Text, "監視を開始・継続できません"); }
-            finally { monitoringAvailable = false; cancellation?.Dispose(); cancellation = null; monitor = null; start.Enabled = settings.Enabled = true; stop.Enabled = false; Reload(); }
+            catch (OperationCanceledException) { if (!closing) status.Text = "監視を停止しました。保存済みの未完了要求は次回開始時に再確認します。"; }
+            catch (Exception ex) { if (!closing) { status.Text = "監視停止: " + ex.Message; MessageBox.Show(this, status.Text, "監視を開始・継続できません"); } }
+            finally { monitoringAvailable = false; cancellation?.Dispose(); cancellation = null; monitor = null; if (!closing) { start.Enabled = settings.Enabled = true; stop.Enabled = false; Reload(); } }
         };
         stop.Click += (_, _) => { monitoringAvailable = false; cancellation?.Cancel(); stop.Enabled = false; status.Text = "停止しています…"; };
         settings.Click += (_, _) => { try { using var dialog = new AgentSettingsForm(); dialog.ShowDialog(this); } catch (Exception ex) { MessageBox.Show(this, ex.Message); } };
         manual.Click += (_, _) => { using var dialog = new ManualLookupForm(); dialog.ShowDialog(this); };
-        arrived.Click += async (_, _) => await RunSelectedAsync("arrived");
-        link.Click += async (_, _) => await RunSelectedAsync("link");
-        register.Click += async (_, _) => await RunSelectedAsync("register");
+        arrived.Click += async (_, _) => await (manualTask = RunSelectedAsync("arrived"));
+        link.Click += async (_, _) => await (manualTask = RunSelectedAsync("link"));
+        register.Click += async (_, _) => await (manualTask = RunSelectedAsync("register"));
         grid.SelectionChanged += (_, _) => UpdateActions();
         var kiosk = new Button { Text = "Kioskコンソール", AutoSize = true };
         kiosk.Click += (_, _) => { try { using var dialog = new KioskConsoleForm(kioskSessions, () => kioskServer?.Url ?? ""); dialog.ShowDialog(this); } catch (Exception ex) { MessageBox.Show(this, ex.Message); } };
@@ -89,32 +100,87 @@ public sealed class MainForm : Form
             if (e.RowIndex < 0) return;
             var r = records.FirstOrDefault(r => r.Id == grid.Rows[e.RowIndex].Cells["ID"].Value as string);
             if (r is null) return;
+            string timing = $"\r\nXML初回発見: {r.FirstSeenAt:yyyy/MM/dd HH:mm:ss.fff}\r\nXML取得完了: {r.CapturedAt:yyyy/MM/dd HH:mm:ss.fff}\r\nカルテ検索: {r.PatientLookupMilliseconds:F0} ms\r\niCall照会開始: {r.ICallStartedAt:HH:mm:ss.fff}\r\niCall応答取得: {r.ICallReceivedAt:HH:mm:ss.fff}\r\niCall応答待ちタイムアウト回数: {r.ICallTimeoutCount}\r\n処理ログ: {Path.Combine(DataDirectory, "Reception", "Logs")}\r\n取込ID: {r.Id}\r\n";
             string detail = $"{r.FileName}\r\n取得元: {r.SourcePath}\r\n状態: {r.Status}\r\n患者照合: {r.Lookup?.Message}\r\n再検証: {r.ReconciliationStatus}\r\n再検証カルテ番号: {r.VerifiedPatientId}\r\n次回: {r.ReconciliationNextAt}\r\n来院確認: {r.ArrivalResult}\r\n連携: {r.LinkResult}\r\n要求ID: {r.PendingRequest?.RequestId}\r\n";
             if (r.Face?.Insurance is { } insurance) detail += $"保険者番号: {insurance.InsurerNumber}\r\n記号: {insurance.Symbol}\r\n番号: {insurance.Number}\r\n枝番: {insurance.Branch}\r\n";
             if (r.Lookup is not null) detail += string.Join("\r\n", r.Lookup.Candidates.Select(c => $"候補: {c.PatientId} / {c.Name} / {string.Join(",", c.RawChartNumbers)}"));
             var job = registration.Load(r.Id);
             if (job is not null) detail += $"\r\n照会番号登録: {job.State} / {job.Message}\r\n登録番号: {job.Target.ReferenceNumber}\r\n訂正前: {job.PreviousReferenceNumber} / 訂正回数: {job.CorrectionCount}\r\n要求: {job.RequestFileName}\r\n応答: {job.ResponseFileName}\r\n結果: {job.SegmentOfResult} / {job.ErrorCode} / {job.ErrorMessage} / {job.ProcessingResultStatus} / {job.ProcessingResultCode} / {job.ProcessingResultMessage}";
-            MessageBox.Show(this, detail, "取込結果");
+            MessageBox.Show(this, detail + timing, "取込結果");
         };
-        refresh.Tick += async (_, _) => await RefreshAsync();
+        refresh.Tick += async (_, _) => await (refreshTask = RefreshAsync());
         Shown += (_, _) => { Reload(); refresh.Start(); };
-        Shown += async (_, _) =>
+        Shown += async (_, _) => await (webStartTask = StartWebServerAsync());
+        FormClosing += async (_, e) =>
         {
-            var server = new Web.KioskWebServer(kioskSessions, () => monitoringAvailable);
-            try { var options = Kiosk.KioskOptions.Load(DataDirectory); options.Validate(); await server.StartAsync(options.Port); if (IsDisposed) await server.DisposeAsync(); else kioskServer = server; }
-            catch (Exception ex) { await server.DisposeAsync(); status.Text = "Kiosk Webサーバー起動失敗: " + ex.Message; }
+            if (closeReady) return;
+            e.Cancel = true;
+            if (closing) return;
+            closing = true; monitoringAvailable = false; refresh.Stop(); commands.Enabled = false;
+            status.Text = "終了しています… 未完了の要求は保存済みの記録から次回確認します。";
+            await ShutdownAsync();
+            closeReady = true;
+            if (!IsDisposed && IsHandleCreated) BeginInvoke(new Action(() => { if (!IsDisposed) Close(); }));
         };
-        FormClosing += (_, e) =>
+        FormClosed += (_, _) => { if (resourcesDisposed) return; resourcesDisposed = true; refresh.Dispose(); };
+    }
+    private async Task StartWebServerAsync()
+    {
+        var server = new Web.KioskWebServer(kioskSessions, () => monitoringAvailable);
+        try
         {
-            if (cancellation is not null) { e.Cancel = true; cancellation.Cancel(); status.Text = "監視停止後に閉じてください。"; }
-            else if (busy) { e.Cancel = true; status.Text = "手動要求の結果待ちです。処理終了後に閉じてください。"; }
-        };
-        FormClosed += (_, _) => { monitoringAvailable = false; refresh.Stop(); resultCancellation.Cancel(); refresh.Dispose(); resultCancellation.Dispose();
-            kioskServer?.DisposeAsync().AsTask().GetAwaiter().GetResult(); };
+            var options = Kiosk.KioskOptions.Load(dataDirectory); options.Validate(); await server.StartAsync(options.Port);
+            if (closing || IsDisposed) await server.DisposeAsync(); else kioskServer = server;
+        }
+        catch (Exception ex)
+        {
+            try { await server.DisposeAsync(); } catch { }
+            if (!closing && !IsDisposed) status.Text = "Kiosk Webサーバー起動失敗: " + ex.Message;
+        }
+    }
+    private async Task ShutdownAsync()
+    {
+        store.Log("shutdown_started", "", new { monitorActive = monitorTask is { IsCompleted: false }, manualActive = manualTask is { IsCompleted: false } });
+        try { cancellation?.Cancel(); } catch (Exception ex) { store.Log("shutdown_cancel_error", "", new { error = ex.GetType().Name }); }
+        try { resultCancellation.Cancel(); } catch (Exception ex) { store.Log("shutdown_cancel_error", "", new { error = ex.GetType().Name }); }
+        async Task StopWeb()
+        {
+            if (webStartTask is not null) await webStartTask;
+            var server = kioskServer; kioskServer = null;
+            if (server is not null) await server.DisposeAsync();
+        }
+        var tasks = new[] { monitorTask, refreshTask, pendingResultRefresh, manualTask, explorerTask, StopWeb() }.OfType<Task>().ToArray();
+        var all = Task.WhenAll(tasks);
+        try { await all.WaitAsync(TimeSpan.FromSeconds(8)); }
+        catch (TimeoutException) { store.Log("shutdown_timeout", "", new { pending = tasks.Count(t => !t.IsCompleted), waitSeconds = 8 }); }
+        catch (OperationCanceledException) { }
+        catch (Exception ex) { store.Log("shutdown_error", "", new { error = ex.GetType().Name }); }
+        _ = DisposeResultCancellationAsync(all);
+        store.Log("shutdown_completed", "", new { pending = tasks.Count(t => !t.IsCompleted) });
+    }
+    private async Task DisposeResultCancellationAsync(Task all)
+    {
+        try { await all.ConfigureAwait(false); } catch { }
+        finally { resultCancellation.Dispose(); }
+    }
+    private async Task OpenResponseFolderAsync(string folder, CancellationToken token)
+    {
+        try
+        {
+            bool minimized = await ResponseFolderExplorer.OpenMinimizedAsync(folder, token);
+            store.Log("response_explorer_opened", "", new { minimized });
+            if (!minimized && !closing && !IsDisposed) status.Text = "エクスプローラーの最小化を確認できませんでした。監視は継続しています。";
+        }
+        catch (OperationCanceledException) { }
+        catch (Exception ex)
+        {
+            store.Log("response_explorer_failed", "", new { error = ex.GetType().Name });
+            if (!closing && !IsDisposed) MessageBox.Show(this, "responseフォルダーをエクスプローラーで開けませんでした。監視は継続します。\r\n" + ex.Message, "フォルダーを開けません");
+        }
     }
     private async Task RefreshAsync()
     {
-        if (refreshingResults || IsDisposed) return;
+        if (closing || refreshingResults || IsDisposed) return;
         refreshingResults = true;
         var token = resultCancellation.Token;
         try
@@ -124,10 +190,10 @@ public sealed class MainForm : Form
                 pendingResultRefresh = Task.Run(() => registration.RefreshResultsAsync(token), token);
                 await pendingResultRefresh;
             }
-            if (!IsDisposed) Reload();
+            if (!closing && !IsDisposed) Reload();
         }
         catch (OperationCanceledException) when (token.IsCancellationRequested) { }
-        catch (Exception ex) { if (!IsDisposed) status.Text = "登録結果・履歴確認エラー: " + ex.Message; }
+        catch (Exception ex) { if (!closing && !IsDisposed) status.Text = "登録結果・履歴確認エラー: " + ex.Message; }
         finally { refreshingResults = false; }
     }
     private static string RegistrationStatus(CaptureRecord record, SingleReferenceRegistrationJob? job) => job?.State switch
@@ -142,6 +208,7 @@ public sealed class MainForm : Form
     };
     private void Reload()
     {
+        if (closing || IsDisposed) return;
         var today = DateOnly.FromDateTime(DateTime.Today);
         var selectedDate = followToday ? today : displayDate.SelectedItem is DateOnly date ? date : today;
         var dates = store.ListDates().Append(today).Distinct().OrderDescending().ToArray();
@@ -214,6 +281,7 @@ public sealed class MainForm : Form
     private CaptureRecord? SelectedRecord() => grid.Columns.Contains("ID") && grid.CurrentRow?.Cells["ID"].Value is string id ? store.Get(id) : null;
     private void UpdateActions()
     {
+        if (closing || IsDisposed) return;
         var record = SelectedRecord();
         bool identified = !busy && record is { Conflict: false, ReconciliationIdentityMismatch: false, Lookup.Selected: not null } &&
             (record.VerifiedPatientId.Length == 0 || record.VerifiedPatientId == record.Lookup.Selected.PatientId);
@@ -232,20 +300,21 @@ public sealed class MainForm : Form
     {
         var record = store.Get(id);
         record.Face = Face.FaceXmlParser.Parse(store.ReadXml(id), record.Encoding);
-        return registration.RegisterAsync(record, AgentSettings.Load(DataDirectory).OqsRoot, CancellationToken.None);
+        return registration.RegisterAsync(record, AgentSettings.Load(dataDirectory).OqsRoot, CancellationToken.None);
     }
     private async Task RunSelectedAsync(string action)
     {
-        if (busy || SelectedRecord() is not { } record) return;
+        if (closing || busy || SelectedRecord() is not { } record) return;
         busy = true; UpdateActions();
         try
         {
             if (action == "register")
             {
                 if (pendingResultRefresh is not null) await pendingResultRefresh;
+                if (closing) return;
                 status.Text = "照会番号の単件登録／応答確認中…";
                 var result = await Task.Run(() => RegisterSelectedAsync(record.Id));
-                status.Text = result.Message;
+                if (!closing && !IsDisposed) status.Text = result.Message;
             }
             else
             {
@@ -254,10 +323,10 @@ public sealed class MainForm : Form
                 await workflow.QueueManualAsync(record.Id, action, CancellationToken.None);
                 await workflow.StepByIdAsync(record.Id, CancellationToken.None);
                 record = store.Get(record.Id);
-                status.Text = record.Status;
+                if (!closing && !IsDisposed) status.Text = record.Status;
             }
         }
-        catch (Exception ex) { status.Text = ex.Message; MessageBox.Show(this, ex.Message, "操作結果を確認してください"); }
-        finally { busy = false; revision = null; Reload(); UpdateActions(); }
+        catch (Exception ex) { if (!closing && !IsDisposed) { status.Text = ex.Message; MessageBox.Show(this, ex.Message, "操作結果を確認してください"); } }
+        finally { busy = false; if (!closing && !IsDisposed) { revision = null; Reload(); UpdateActions(); } }
     }
 }

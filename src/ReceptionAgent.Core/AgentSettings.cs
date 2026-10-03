@@ -9,6 +9,7 @@ public sealed class AgentSettings
     public string FaceTrashDirectory { get; set; } = "";
     public string ICallRequestDirectory { get; set; } = "";
     public string ICallResponseDirectory { get; set; } = "";
+    public bool OpenResponseFolderOnMonitorStart { get; set; }
     public bool AutoRegisterReferenceNumber { get; set; }
     public bool ReconcileReferenceNumber { get; set; } = true;
     public bool MarkArrived { get; set; }
@@ -35,7 +36,8 @@ public sealed class AgentSettings
         {
             using (var stream = new FileStream(temp, FileMode.CreateNew, FileAccess.Write, FileShare.None))
             { JsonSerializer.Serialize(stream, new AgentSettings { OqsRoot = normalized, FaceXmlDirectory = faceDirectory, FaceEncoding = FaceEncoding,
-                AutoRegisterReferenceNumber = AutoRegisterReferenceNumber, ReconcileReferenceNumber = ReconcileReferenceNumber, FaceTrashDirectory = trash, ICallRequestDirectory = request, ICallResponseDirectory = response, MarkArrived = MarkArrived, LinkReservation = LinkReservation }, new JsonSerializerOptions { WriteIndented = true }); stream.Flush(true); }
+                AutoRegisterReferenceNumber = AutoRegisterReferenceNumber, ReconcileReferenceNumber = ReconcileReferenceNumber, FaceTrashDirectory = trash, ICallRequestDirectory = request, ICallResponseDirectory = response,
+                OpenResponseFolderOnMonitorStart = OpenResponseFolderOnMonitorStart, MarkArrived = MarkArrived, LinkReservation = LinkReservation }, new JsonSerializerOptions { WriteIndented = true }); stream.Flush(true); }
             File.Move(temp, path, true); OqsRoot = normalized; FaceXmlDirectory = faceDirectory;
             FaceTrashDirectory = trash; ICallRequestDirectory = request; ICallResponseDirectory = response;
         }

@@ -24,6 +24,8 @@ public sealed class AgentSettingsForm : Form
         var trash = Folder("Dynamics取込後のtrashフォルダー", current.FaceTrashDirectory);
         var request = Folder("iCallManager requestフォルダー（req）", current.ICallRequestDirectory);
         var response = Folder("iCallManager responseフォルダー（res）", current.ICallResponseDirectory);
+        var openResponse = new CheckBox { AutoSize = true, Text = "監視開始時にエクスプローラで開く", Checked = current.OpenResponseFolderOnMonitorStart };
+        layout.Controls.Add(openResponse);
         layout.Controls.Add(new Label { Text = "face XMLの文字コード", AutoSize = true });
         var encoding = new ComboBox { DropDownStyle = ComboBoxStyle.DropDownList, Width = 220, AccessibleName = "face XMLの文字コード" };
         encoding.Items.AddRange(["UTF-8", "Shift_JIS（CP932）"]);
@@ -47,6 +49,7 @@ public sealed class AgentSettingsForm : Form
             {
                 new AgentSettings { OqsRoot = oqs.Text, FaceXmlDirectory = face.Text, FaceTrashDirectory = trash.Text,
                     AutoRegisterReferenceNumber = autoRegister.Checked, ReconcileReferenceNumber = reconcile.Checked, ICallRequestDirectory = request.Text, ICallResponseDirectory = response.Text, MarkArrived = false, LinkReservation = false,
+                    OpenResponseFolderOnMonitorStart = openResponse.Checked,
                     FaceEncoding = encoding.SelectedIndex == 0 ? Face.FaceXmlEncoding.Utf8 : Face.FaceXmlEncoding.ShiftJis }.Save(MainForm.DataDirectory);
                 DialogResult = DialogResult.OK;
             }

@@ -8,6 +8,22 @@ public sealed class CaptureStore
     internal SemaphoreSlim WorkflowGate { get; } = new(1, 1);
     private readonly string connectionString;
     private readonly string directory;
+    private readonly object logGate = new();
+    // Logging must never interrupt patient processing. Correlation IDs contain no identity fields.
+    public void Log(string eventName, string captureId, object detail)
+    {
+        try
+        {
+            lock (logGate)
+            {
+                string folder = Path.Combine(directory, "Logs"); Directory.CreateDirectory(folder);
+                string path = Path.Combine(folder, $"processing-{DateTime.Now:yyyyMMdd}.jsonl");
+                if (File.Exists(path) && new FileInfo(path).Length >= 20 * 1024 * 1024) return;
+                File.AppendAllText(path, JsonSerializer.Serialize(new { at = DateTimeOffset.Now, eventName, captureId, detail }) + Environment.NewLine);
+            }
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException) { }
+    }
     public CaptureStore(string directory)
     {
         this.directory = directory; Directory.CreateDirectory(directory);

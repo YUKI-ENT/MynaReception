@@ -26,6 +26,8 @@ internal static class CaptureTests
         check(await monitor.CaptureAsync(source, DateTime.Now, default), "missing source recovered from trash");
         check(!await monitor.CaptureAsync(trash, DateTime.Now, default), "same file from trash is not captured twice");
         var record = store.List().Single();
+        check(record.FirstSeenAt is not null && record.FirstSeenAt <= record.CapturedAt,
+            "capture discovery timestamp persists for latency diagnosis");
         check(!record.MarkArrived && !record.LinkReservation, "capture ignores legacy automatic operation settings");
         check(record.Face?.Insurance?.InsurerNumber == "00123456" && record.XmlPatientName == "試験太郎" && record.FileCreatedAt is not null, "SQLite retains patient insurance creation date and XML");
         var restoredStore = new CaptureStore(Path.Combine(root, "db"));
@@ -44,6 +46,8 @@ internal static class CaptureTests
         check(request.Fingerprint() == managerRequest.Fingerprint(), "fingerprint identical to actual iCallManager contract");
         await workflow.StepAsync(record, default);
         check(record.Stage == CaptureStage.FindWaiting && record.PendingRequest!.RequestId == request.RequestId && File.Exists(Path.Combine(settings.ICallRequestDirectory, request.RequestId + ".json")), "timeout retains request ID for restart");
+        check(record.ICallTimeoutCount == 1 && record.ICallStartedAt is not null && record.PatientLookupMilliseconds >= 0,
+            "lookup duration and timeout count recorded");
         async Task Reply(CaptureRecord r, bool success = true, string? code = null)
         {
             var req = r.PendingRequest!;
@@ -54,6 +58,15 @@ internal static class CaptureTests
         await new ReceptionWorkflow(restoredStore, Lookup).StepAsync(record, default);
         await workflow.StepAsync(record, default); await workflow.StepAsync(record, default);
         check(record.Stage == CaptureStage.Completed && record.ReceptionNo == "7" && record.Lookup?.Selected?.PatientId == "11", "reservation acquired after restart");
+        check(record.ICallReceivedAt >= record.ICallStartedAt && record.ICallTimeoutCount == 1,
+            "response timing and prior timeout survive restart");
+        string telemetry = File.ReadAllText(Directory.GetFiles(Path.Combine(root, "db", "Logs"), "*.jsonl").Single());
+        var telemetryRows = telemetry.Split(Environment.NewLine, StringSplitOptions.RemoveEmptyEntries).Select(line => JsonDocument.Parse(line)).ToArray();
+        check(telemetryRows.Any(row => row.RootElement.GetProperty("eventName").GetString() == "icall_timeout") &&
+            telemetryRows.Any(row => row.RootElement.GetProperty("eventName").GetString() == "icall_response_received"),
+            "diagnostic log correlates timeout and eventual response");
+        check(!telemetry.Contains("試験太郎") && !telemetry.Contains("00123456"), "processing log excludes patient name and insurance");
+        foreach (var row in telemetryRows) row.Dispose();
         check(Directory.GetFiles(settings.ICallRequestDirectory).Length == 1, "default configuration sends find only");
         // Move a file while a compatible writer still has it open. Capture must not block the rename.
         string moving = Path.Combine(settings.FaceXmlDirectory, Name("moving"));

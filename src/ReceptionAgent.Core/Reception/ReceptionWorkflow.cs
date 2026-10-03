@@ -45,6 +45,9 @@ public sealed class ReceptionWorkflow(CaptureStore store, Func<FaceIdentity, Can
     private async Task StepCoreAsync(CaptureRecord record, CancellationToken token)
     {
         if (record.Conflict || record.Stage is CaptureStage.Completed or CaptureStage.NeedsReview) return;
+        var previousStage = record.Stage;
+        var elapsed = System.Diagnostics.Stopwatch.StartNew();
+        store.Log("step_started", record.Id, new { stage = previousStage.ToString(), requestId = record.PendingRequest?.RequestId });
         try
         {
             if (record.GeneratedAt.Date != DateTime.Today)
@@ -56,7 +59,10 @@ public sealed class ReceptionWorkflow(CaptureStore store, Func<FaceIdentity, Can
                     record.XmlPatientName = record.Face.PatientName ?? "";
                     store.Save(record);
                     var referencePatient = FaceReferencePatient.Resolve(record.Face);
+                    var lookupWatch = System.Diagnostics.Stopwatch.StartNew();
                     record.Lookup = referencePatient ?? await lookup(record.Face, token);
+                    record.PatientLookupMilliseconds = lookupWatch.Elapsed.TotalMilliseconds;
+                    store.Log("patient_lookup", record.Id, new { elapsedMs = record.PatientLookupMilliseconds, source = referencePatient is null ? "Dynamics" : "XML", candidates = record.Lookup.Candidates.Count });
                     record.PatientIdentifiedByDynamics = referencePatient is null && record.Lookup.Selected is not null;
                     if (record.Lookup.Selected is null)
                     {
@@ -87,7 +93,11 @@ public sealed class ReceptionWorkflow(CaptureStore store, Func<FaceIdentity, Can
                     if (request.Action is "arrived" or "link" && !record.ManualOperationRequested)
                         throw new InvalidDataException("旧設定による自動操作要求を停止しました。iCallManager側の処理結果を確認してください。");
                     // The request was committed in the preceding step, before any external write.
-                    var response = await new ICallFileClient().SendAsync(request, record.RequestDirectory, record.ResponseDirectory, TimeSpan.FromSeconds(request.Action == "link" ? 20 : 2), token);
+                    record.ICallStartedAt ??= DateTimeOffset.Now;
+                    store.Save(record);
+                    var response = await new ICallFileClient().SendAsync(request, record.RequestDirectory, record.ResponseDirectory, TimeSpan.FromSeconds(request.Action == "link" ? 20 : 2), token,
+                        (eventName, detail) => store.Log(eventName, record.Id, detail));
+                    record.ICallReceivedAt = DateTimeOffset.Now;
                     record.Responses.Add(response);
                     if (request.Action == "find_candidates")
                     {
@@ -128,8 +138,12 @@ public sealed class ReceptionWorkflow(CaptureStore store, Func<FaceIdentity, Can
         catch (Exception ex) when (ex is InvalidDataException or System.Xml.XmlException or System.Text.DecoderFallbackException)
         { record.Stage = CaptureStage.NeedsReview; record.Status = ex.Message; }
         catch (Exception ex)
-        { record.Status = "再試行待ち: " + ex.Message; record.RetryAfter = DateTimeOffset.Now.AddSeconds(10); }
+        { if (ex is TimeoutException) record.ICallTimeoutCount++;
+            record.Status = "再試行待ち: " + ex.Message; record.RetryAfter = DateTimeOffset.Now.AddSeconds(10);
+            store.Log("step_retry", record.Id, new { error = ex.GetType().Name, record.RetryAfter, record.ICallTimeoutCount }); }
         store.Save(record);
+        store.Log("step_completed", record.Id, new { from = previousStage.ToString(), to = record.Stage.ToString(), elapsedMs = elapsed.Elapsed.TotalMilliseconds,
+            requestId = record.PendingRequest?.RequestId, code = record.Responses.LastOrDefault()?.Code });
     }
     private static void Prepare(CaptureRecord record, string action, CaptureStage stage)
     {

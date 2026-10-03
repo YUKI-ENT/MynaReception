@@ -88,6 +88,7 @@ public sealed class FileBridge : IDisposable
         }
         catch (JsonException) { Reject(path, "JSON形式が不正です。tmpからjsonへのリネームで送信してください。"); return; }
         string fingerprint = request.Fingerprint();
+        OperationalLog.Write("bridge_received", new { request.RequestId, request.Action });
         string journalPath = Path.Combine(journalDirectory, id + ".json");
         BridgeResponse response;
         if (File.Exists(journalPath))
@@ -109,6 +110,7 @@ public sealed class FileBridge : IDisposable
         WriteAtomic(journalPath, new Journal(fingerprint, response));
         WriteAtomic(Path.Combine(responseDirectory, id + ".json"), response);
         File.Delete(path);
+        OperationalLog.Write("bridge_response_written", new { request.RequestId, response.Code });
         log($"要求 {id}: {response.Code} — {response.Message}");
     }
 

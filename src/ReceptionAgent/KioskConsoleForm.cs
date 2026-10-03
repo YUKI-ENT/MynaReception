@@ -37,7 +37,7 @@ internal sealed class KioskConsoleForm : Form
             ValueMember = "Value", DisplayMember = "Text", Width = 120 });
         rules.CellFormatting += (_, e) => { if (e.ColumnIndex == 0 && e.Value is Reception.ReceptionCategory category) { e.Value = Reception.ReceptionClassification.Label(category); e.FormattingApplied = true; } };
         layout.Controls.Add(rules, 0, 2);
-        layout.Controls.Add(new Label { AutoSize = true, Text = "StaffHelp＝職員案内／Finish＝案内表示を終了可能（受付完了操作ではありません）。受診歴とカルテの不一致・複数候補等は職員案内を優先します。" }, 0, 3);
+        layout.Controls.Add(new Label { AutoSize = true, Text = "StaffHelp＝職員案内／Finish＝案内表示を終了可能（受付完了操作ではありません）。発熱・予約回答の不一致・同月日や複数候補の重複等は職員案内を優先します。" }, 0, 3);
         var history = new DataGridView { Dock = DockStyle.Fill, ReadOnly = true, AllowUserToAddRows = false, AllowUserToDeleteRows = false,
             RowHeadersVisible = false, SelectionMode = DataGridViewSelectionMode.FullRowSelect, MultiSelect = false, AutoSizeColumnsMode = DataGridViewAutoSizeColumnsMode.DisplayedCells };
         layout.Controls.Add(history, 0, 4);
@@ -49,8 +49,12 @@ internal sealed class KioskConsoleForm : Form
                 var rows = sessions.List();
                 string? selectedId = history.CurrentRow?.Cells["セッションID"].Value as string;
                 foreach (var s in rows.Where(s => s.State is KioskSessionState.WaitingForXml or KioskSessionState.LookingUp)) _ = sessions.Get(s.Id, s.Device);
-                history.DataSource = sessions.List().Select(s => new { セッションID = s.Id, 状態 = s.State, 氏名カナ = s.Answers.NameKana,
-                    生年月日 = s.Answers.Birthdate, 開始日時 = s.StartedAt.LocalDateTime, 分類 = Reception.ReceptionClassification.Label(s.Category), 表示 = s.Message, XML取込ID = s.CaptureId }).ToList();
+                history.DataSource = sessions.List().Select(s => new { セッションID = s.Id, 状態 = s.State, 氏名 = s.ConfirmedName, 氏名カナ = s.Answers.NameKana,
+                    誕生月日 = s.MonthDayAnswers is { } a ? $"{a.Month:00}/{a.Day:00}" : s.Answers.Birthdate,
+                    発熱 = s.MonthDayAnswers is { } fever ? fever.HasFever == true ? "あり" : "なし" : "未回答",
+                    予約回答 = s.MonthDayAnswers is { } reserved ? reserved.SaysReserved == true ? "あり" : "なし" : "未回答",
+                    カルテ番号 = s.PatientId, 予約番号 = s.ReceptionNo, 回答日時 = s.InputCompletedAt?.LocalDateTime,
+                    開始日時 = s.StartedAt.LocalDateTime, 分類 = Reception.ReceptionClassification.Label(s.Category), 表示 = s.Message, XML取込ID = s.CaptureId }).ToList();
                 if (selectedId is not null) foreach (DataGridViewRow row in history.Rows)
                     if (row.Cells["セッションID"].Value as string == selectedId) { history.CurrentCell = row.Cells["状態"]; break; }
                 server.Text = "Webサーバー: " + (serverUrl().Length > 0 ? serverUrl() : "起動していません");

@@ -8,17 +8,25 @@ namespace ReceptionAgent.Kiosk;
 
 public enum KioskSessionState { WaitingForXml, LookingUp, Guidance, StaffHelp, Cancelled, Expired, Unavailable, Closed }
 public sealed record KioskAnswers(string NameKana, string Birthdate, bool HasVisitedBefore, string? PatientId = null);
+public sealed record KioskMonthDayAnswers(int Month, int Day, bool? HasFever = null, bool? SaysReserved = null);
 public sealed class KioskSession
 {
     public string Id { get; set; } = Guid.NewGuid().ToString("N");
     public string Device { get; set; } = "";
     public string CommandId { get; set; } = "";
     public KioskAnswers Answers { get; set; } = new("", "", false);
+    public bool MonthDayOnly { get; set; }
+    public KioskMonthDayAnswers? MonthDayAnswers { get; set; }
+    public DateTimeOffset? InputCompletedAt { get; set; }
+    public string ConfirmedName { get; set; } = "";
+    public string PatientId { get; set; } = "";
+    public string ReceptionNo { get; set; } = "";
     public KioskOptions Options { get; set; } = new();
     public KioskSessionState State { get; set; } = KioskSessionState.WaitingForXml;
     public long Version { get; set; } = 1;
     public DateTimeOffset StartedAt { get; set; }
     public DateTimeOffset ExpiresAt { get; set; }
+    public DateTimeOffset? XmlWindowExpiresAt { get; set; }
     public string? CaptureId { get; set; }
     public ReceptionCategory Category { get; set; } = ReceptionCategory.Pending;
     public string Title { get; set; } = "カードを置いてください";
@@ -39,7 +47,7 @@ public sealed class KioskSessions
         connectionString = new SqliteConnectionStringBuilder { DataSource = Path.Combine(directory, "kiosk.sqlite3") }.ToString();
         this.captures = captures; this.options = options; this.available = available; this.clock = clock ?? (() => DateTimeOffset.Now);
         using var connection = Open(); using var cmd = connection.CreateCommand();
-        cmd.CommandText = "PRAGMA journal_mode=WAL; CREATE TABLE IF NOT EXISTS sessions(id TEXT PRIMARY KEY, device TEXT NOT NULL, command_id TEXT NOT NULL, capture_id TEXT UNIQUE, data TEXT NOT NULL, UNIQUE(device,command_id)); CREATE UNIQUE INDEX IF NOT EXISTS single_active_session ON sessions((1)) WHERE json_extract(data,'$.State') IN (0,1);";
+        cmd.CommandText = "PRAGMA journal_mode=WAL; CREATE TABLE IF NOT EXISTS sessions(id TEXT PRIMARY KEY, device TEXT NOT NULL, command_id TEXT NOT NULL, capture_id TEXT UNIQUE, data TEXT NOT NULL, UNIQUE(device,command_id)); DROP INDEX IF EXISTS single_active_session; CREATE UNIQUE INDEX IF NOT EXISTS active_device_session ON sessions(device) WHERE json_extract(data,'$.State') IN (0,1);";
         cmd.ExecuteNonQuery();
     }
     private SqliteConnection Open() { var connection = new SqliteConnection(connectionString); connection.Open(); return connection; }
@@ -76,7 +84,7 @@ public sealed class KioskSessions
         cmd.Parameters.AddWithValue("$id", session.Id); cmd.Parameters.AddWithValue("$device", session.Device); cmd.Parameters.AddWithValue("$command", session.CommandId);
         cmd.Parameters.AddWithValue("$capture", (object?)session.CaptureId ?? DBNull.Value); cmd.Parameters.AddWithValue("$data", JsonSerializer.Serialize(session)); cmd.ExecuteNonQuery();
     }
-    public KioskSession Start(string device, string commandId, KioskAnswers answers)
+    public KioskSession Start(string device, string commandId, KioskAnswers? answers = null)
     {
         lock (gate)
         {
@@ -89,35 +97,63 @@ public sealed class KioskSessions
                 if (cmd.ExecuteScalar() is string json)
                 {
                     var existing = JsonSerializer.Deserialize<KioskSession>(json)!;
-                    if (existing.Answers != answers) throw new InvalidOperationException("同じ要求IDの入力内容が異なります。");
+                    if (existing.MonthDayOnly != (answers is null) || answers is not null && existing.Answers != answers)
+                        throw new InvalidOperationException("同じ要求IDの入力内容が異なります。");
                     return existing;
                 }
             }
             if (!available()) throw new InvalidOperationException("ReceptionAgentの監視を開始してください。");
-            if (answers is null || string.IsNullOrWhiteSpace(answers.NameKana) || answers.NameKana.Length > 100 || PatientNameMatcher.NormalizeKana(answers.NameKana).Length == 0 ||
+            if (answers is not null && (string.IsNullOrWhiteSpace(answers.NameKana) || answers.NameKana.Length > 100 || PatientNameMatcher.NormalizeKana(answers.NameKana).Length == 0 ||
                 !DateOnly.TryParseExact(answers.Birthdate, "yyyy-MM-dd", CultureInfo.InvariantCulture, DateTimeStyles.None, out var birth) || birth > DateOnly.FromDateTime(clock().LocalDateTime) ||
-                answers.PatientId is { Length: > 0 } id && (id.Length > 50 || !id.All(char.IsAsciiDigit)))
+                answers.PatientId is { Length: > 0 } id && (id.Length > 50 || !id.All(char.IsAsciiDigit))))
                 throw new ArgumentException("氏名カナ・生年月日・診察券番号を確認してください。");
             ExpireAll();
             // Query all active sessions, not the limited console history.
             using (var connection = Open())
             using (var cmd = connection.CreateCommand())
             {
-                cmd.CommandText = "SELECT count(*) FROM sessions WHERE json_extract(data,'$.State') IN (0,1)";
-                if (Convert.ToInt64(cmd.ExecuteScalar()) > 0) throw new InvalidOperationException("別の受付がカード操作・照会中です。少しお待ちください。");
+                cmd.CommandText = "SELECT data FROM sessions WHERE json_extract(data,'$.State') IN (0,1)";
+                var active = new List<KioskSession>();
+                using (var reader = cmd.ExecuteReader()) while (reader.Read()) active.Add(JsonSerializer.Deserialize<KioskSession>(reader.GetString(0))!);
+                if (active.Any(s => s.Device == device) || active.Count >= 2 || active.Count > 0 && (answers is not null || active.Any(s => !s.MonthDayOnly)))
+                    throw new InvalidOperationException("別の受付がカード操作・照会中です。少しお待ちください。");
             }
             var settings = options(); settings.Validate();
-            var session = new KioskSession { Device = device, CommandId = commandId, Answers = answers,
+            var session = new KioskSession { Device = device, CommandId = commandId, Answers = answers ?? new("", "", false), MonthDayOnly = answers is null,
                 StartedAt = clock(), ExpiresAt = clock().AddSeconds(settings.FaceTimeoutSeconds), Options = settings };
+            session.XmlWindowExpiresAt = session.ExpiresAt;
             Save(session, true); return session;
+        }
+    }
+    public KioskSession SubmitAnswers(string id, string device, KioskMonthDayAnswers answers)
+    {
+        lock (gate)
+        {
+            var session = Read(id, device);
+            if (!session.MonthDayOnly) throw new InvalidOperationException("このセッションは月日入力方式ではありません。");
+            if (answers is null || answers.HasFever is null || answers.SaysReserved is null || answers.Month is < 1 or > 12 || answers.Day < 1 || answers.Day > DateTime.DaysInMonth(2000, answers.Month))
+                throw new ArgumentException("誕生月日を確認してください。");
+            if (session.MonthDayAnswers is not null)
+            {
+                if (session.MonthDayAnswers != answers) throw new InvalidOperationException("送信済みの回答と異なります。職員へお声掛けください。");
+                return Get(id, device);
+            }
+            session = Get(id, device);
+            if (session.State != KioskSessionState.WaitingForXml) throw new InvalidOperationException("受付を再開してください。");
+            session.MonthDayAnswers = answers; session.InputCompletedAt = clock(); session.Version++; Save(session);
+            return Get(id, device);
         }
     }
     private void ExpireAll()
     {
+        foreach (var session in Active()) if (clock() >= session.ExpiresAt) { session.State = KioskSessionState.Expired; session.Title = "時間切れ"; session.Message = "受付へお声掛けください。"; session.Version++; Save(session); }
+    }
+    private List<KioskSession> Active()
+    {
         using var connection = Open(); using var cmd = connection.CreateCommand();
         cmd.CommandText = "SELECT data FROM sessions WHERE json_extract(data,'$.State') IN (0,1)";
         var active = new List<KioskSession>(); using (var reader = cmd.ExecuteReader()) while (reader.Read()) active.Add(JsonSerializer.Deserialize<KioskSession>(reader.GetString(0))!);
-        foreach (var session in active) if (clock() >= session.ExpiresAt) { session.State = KioskSessionState.Expired; session.Title = "時間切れ"; session.Message = "受付へお声掛けください。"; session.Version++; Save(session); }
+        return active;
     }
     public KioskSession Get(string id, string device)
     {
@@ -129,16 +165,32 @@ public sealed class KioskSessions
             else if (clock() >= session.ExpiresAt) { session.State = KioskSessionState.Expired; session.Title = "時間切れ"; session.Message = "受付へお声掛けください。"; }
             else
             {
-                if (session.CaptureId is null)
+                if (session.MonthDayOnly && session.MonthDayAnswers is null) return session;
+                if (session.CaptureId is null || session.MonthDayOnly)
                 {
-                    var birth = DateOnly.ParseExact(session.Answers.Birthdate, "yyyy-MM-dd", CultureInfo.InvariantCulture);
-                    var days = new[] { DateOnly.FromDateTime(session.StartedAt.LocalDateTime), DateOnly.FromDateTime(session.ExpiresAt.LocalDateTime) }.Distinct();
+                    var xmlDeadline = session.XmlWindowExpiresAt ?? session.ExpiresAt;
+                    var birth = session.MonthDayOnly ? new DateOnly(2000, session.MonthDayAnswers!.Month, session.MonthDayAnswers.Day) :
+                        DateOnly.ParseExact(session.Answers.Birthdate, "yyyy-MM-dd", CultureInfo.InvariantCulture);
+                    var days = new[] { DateOnly.FromDateTime(session.StartedAt.LocalDateTime), DateOnly.FromDateTime(xmlDeadline.LocalDateTime) }.Distinct();
                     var matches = days.SelectMany(day => captures.List(limit: int.MaxValue, date: day)).Where(r =>
-                        !r.Conflict && r.Face is not null && r.CapturedAt > session.StartedAt && r.CapturedAt <= session.ExpiresAt &&
-                        r.GeneratedAt >= session.StartedAt.LocalDateTime && r.GeneratedAt <= session.ExpiresAt.LocalDateTime &&
-                        r.Face.Birthdate == birth && PatientNameMatcher.NormalizeKanaForMatching(r.Face.NameKana) == PatientNameMatcher.NormalizeKanaForMatching(session.Answers.NameKana)).ToArray();
+                        !r.Conflict && r.Face is not null && r.CapturedAt > session.StartedAt && r.CapturedAt <= xmlDeadline &&
+                        r.GeneratedAt >= session.StartedAt.LocalDateTime && r.GeneratedAt <= xmlDeadline.LocalDateTime &&
+                        (session.MonthDayOnly ? r.Face.Birthdate.Month == birth.Month && r.Face.Birthdate.Day == birth.Day :
+                        r.Face.Birthdate == birth && PatientNameMatcher.NormalizeKanaForMatching(r.Face.NameKana) == PatientNameMatcher.NormalizeKanaForMatching(session.Answers.NameKana))).ToArray();
+                    if (session.MonthDayOnly)
+                    {
+                        var others = Active().Where(s => s.ExpiresAt > clock() && s.Id != session.Id && s.MonthDayOnly && s.State is KioskSessionState.WaitingForXml or KioskSessionState.LookingUp &&
+                            s.StartedAt <= session.ExpiresAt && s.ExpiresAt >= session.StartedAt).ToArray();
+                        if (others.Any(s => s.MonthDayAnswers is null)) return session;
+                        var conflicts = others.Where(s => s.MonthDayAnswers?.Month == birth.Month && s.MonthDayAnswers.Day == birth.Day).ToArray();
+                        if (conflicts.Length > 0)
+                        {
+                            foreach (var other in conflicts) { ToStaff(other, "同じ誕生月日の受付が重なっています。職員へお声掛けください。"); other.Version++; Save(other); }
+                            ToStaff(session, "同じ誕生月日の受付が重なっています。職員へお声掛けください。"); session.Version++; Save(session); return session;
+                        }
+                    }
                     if (matches.Length > 1) { session.State = KioskSessionState.StaffHelp; session.Title = "受付で確認します"; session.Message = "複数の読取結果があります。職員へお声掛けください。"; }
-                    else if (matches.Length == 1)
+                    else if (matches.Length == 1 && session.CaptureId is null)
                     {
                         var capture = matches[0];
                         if (!string.IsNullOrWhiteSpace(session.Answers.PatientId) &&
@@ -151,10 +203,11 @@ public sealed class KioskSessions
                             cmd.CommandText = "SELECT count(*) FROM sessions WHERE capture_id=$id"; cmd.Parameters.AddWithValue("$id", capture.Id);
                             if (Convert.ToInt64(cmd.ExecuteScalar()) == 0)
                             { session.CaptureId = capture.Id; session.State = KioskSessionState.LookingUp; session.Title = "予約を確認しています"; session.Message = "そのままお待ちください。"; session.ExpiresAt = clock().AddSeconds(session.Options.LookupTimeoutSeconds); }
+                            else if (session.MonthDayOnly) ToStaff(session, "読取結果は別の受付で使用されています。職員へお声掛けください。");
                         }
                     }
                 }
-                if (session.CaptureId is { } captureId)
+                if (session.CaptureId is { } captureId && session.State == KioskSessionState.LookingUp)
                 {
                     var capture = captures.Get(captureId); session.Category = capture.ReceptionCategory;
                     if (session.Category != ReceptionCategory.Pending)
@@ -164,9 +217,15 @@ public sealed class KioskSessions
                         if (review) { session.State = KioskSessionState.StaffHelp; session.Title = "受付で確認します"; session.Message = "患者情報の確認が必要です。受付へお声掛けください。"; }
                         else
                         {
+                            session.ConfirmedName = !string.IsNullOrWhiteSpace(capture.Face?.PatientName) ? capture.Face.PatientName : capture.Lookup?.Selected?.Name ?? "";
+                            session.PatientId = capture.Lookup?.Selected?.PatientId ?? ""; session.ReceptionNo = capture.ReceptionNo;
                             var rule = session.Options.Rules.Single(r => r.Category == session.Category);
                             session.Title = rule.Title; session.Message = rule.Message;
                             session.State = rule.NextStep == KioskNextStep.Finish ? KioskSessionState.Guidance : KioskSessionState.StaffHelp;
+                            if (session.MonthDayAnswers?.HasFever == true)
+                                ToStaff(session, "発熱があると回答されています。受付へお声掛けください。");
+                            else if (session.MonthDayAnswers is { } input && capture.ReservationFoundAtReception != input.SaysReserved)
+                                ToStaff(session, "予約の回答と照会結果の確認が必要です。受付へお声掛けください。");
                         }
                     }
                 }
@@ -174,6 +233,8 @@ public sealed class KioskSessions
             session.Version++; Save(session); return session;
         }
     }
+    private static void ToStaff(KioskSession session, string message)
+    { session.State = KioskSessionState.StaffHelp; session.Title = "受付で確認します"; session.Message = message; }
     public KioskSession End(string id, string device, bool cancel)
     {
         lock (gate)

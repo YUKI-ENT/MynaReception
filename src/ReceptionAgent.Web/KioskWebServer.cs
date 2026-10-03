@@ -6,7 +6,7 @@ using ReceptionAgent.Kiosk;
 
 namespace ReceptionAgent.Web;
 
-public sealed record StartKioskRequest(string CommandId, KioskAnswers Answers);
+public sealed record StartKioskRequest(string CommandId, KioskAnswers? Answers = null);
 public sealed class KioskWebServer(KioskSessions sessions, Func<bool> available) : IAsyncDisposable
 {
     private WebApplication? app;
@@ -45,6 +45,8 @@ public sealed class KioskWebServer(KioskSessions sessions, Func<bool> available)
         }
         object View(KioskSession session) => new { session.Id, state = session.State.ToString(), session.Version,
             session.Title, session.Message, category = session.Category.ToString(), session.ExpiresAt,
+            needsInput = session.MonthDayOnly && session.MonthDayAnswers is null && session.State == KioskSessionState.WaitingForXml,
+            confirmedName = session.ConfirmedName,
             waiting = session.State is KioskSessionState.WaitingForXml or KioskSessionState.LookingUp };
         web.MapGet("/", (HttpContext context) =>
         {
@@ -57,6 +59,7 @@ public sealed class KioskWebServer(KioskSessions sessions, Func<bool> available)
         web.MapGet("/api/health", () => Results.Ok(new { available = available(), testMode = true }));
         web.MapGet("/api/current", (HttpContext context) => Results.Ok(new { session = sessions.Current(Device(context)) is { } current ? View(current) : null }));
         web.MapPost("/api/sessions", (HttpContext context, StartKioskRequest request) => Results.Ok(View(sessions.Start(Device(context), request.CommandId, request.Answers))));
+        web.MapPost("/api/sessions/{id}/answers", (HttpContext context, string id, KioskMonthDayAnswers answers) => Results.Ok(View(sessions.SubmitAnswers(id, Device(context), answers))));
         web.MapGet("/api/sessions/{id}", (HttpContext context, string id) => Results.Ok(View(sessions.Get(id, Device(context)))));
         web.MapPost("/api/sessions/{id}/cancel", (HttpContext context, string id) => Results.Ok(View(sessions.End(id, Device(context), true))));
         web.MapPost("/api/sessions/{id}/acknowledge", (HttpContext context, string id) => Results.Ok(View(sessions.End(id, Device(context), false))));
@@ -70,8 +73,11 @@ public sealed class KioskWebServer(KioskSessions sessions, Func<bool> available)
     }
     public async ValueTask DisposeAsync()
     {
-        if (app is null) return;
+        var server = app;
+        app = null; Url = "";
+        if (server is null) return;
         using var stop = new CancellationTokenSource(TimeSpan.FromSeconds(3));
-        await app.StopAsync(stop.Token); await app.DisposeAsync(); app = null; Url = "";
+        try { await server.StopAsync(stop.Token).ConfigureAwait(false); }
+        finally { await server.DisposeAsync().ConfigureAwait(false); }
     }
 }

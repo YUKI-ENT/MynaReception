@@ -67,7 +67,24 @@ public sealed class ReservationService : IDisposable
     public Task<string> DiagnoseAsync(CancellationToken ct = default) =>
         Enqueue(() => { adapter ??= factory(); return adapter.Diagnose(); }, ct);
 
-    public Task<OperationResult> ExecuteAsync(BridgeRequest request, CancellationToken ct = default) => Enqueue(() => Execute(request), ct);
+    public Task<OperationResult> ExecuteAsync(BridgeRequest request, CancellationToken ct = default)
+    {
+        var queued = System.Diagnostics.Stopwatch.StartNew();
+        OperationalLog.Write("request_queued", new { request.RequestId, request.Action });
+        return Enqueue(() =>
+        {
+            double queueMs = queued.Elapsed.TotalMilliseconds;
+            OperationalLog.Write("request_started", new { request.RequestId, request.Action, queueMs });
+            OperationalLog.RequestId = request.RequestId;
+            try
+            {
+                var result = Execute(request);
+                OperationalLog.Write("request_completed", new { request.RequestId, request.Action, result.Code, queueMs, executionMs = queued.Elapsed.TotalMilliseconds - queueMs });
+                return result;
+            }
+            finally { OperationalLog.RequestId = null; }
+        }, ct);
+    }
 
     private OperationResult Execute(BridgeRequest request)
     {

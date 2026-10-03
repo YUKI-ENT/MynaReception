@@ -28,12 +28,14 @@ public sealed record ICallReservationCandidate(string ReceptionNo, string? Patie
 public sealed class ICallFileClient
 {
     public static JsonSerializerOptions Json { get; } = new(JsonSerializerDefaults.Web) { WriteIndented = true };
-    public async Task<ICallResponse> SendAsync(ICallRequest request, string requestDirectory, string responseDirectory, TimeSpan timeout, CancellationToken token)
+    public async Task<ICallResponse> SendAsync(ICallRequest request, string requestDirectory, string responseDirectory, TimeSpan timeout, CancellationToken token,
+        Action<string, object>? log = null)
     {
         if (!System.Text.RegularExpressions.Regex.IsMatch(request.RequestId, @"\Ara-[a-f0-9]{32}-(find|find_candidates|arrived|link)\z"))
             throw new ArgumentException("ReceptionAgentのrequestIdが不正です。");
         if (!Directory.Exists(requestDirectory) || !Directory.Exists(responseDirectory)) throw new DirectoryNotFoundException("iCallManagerのrequest/responseフォルダーを確認してください。");
         string requestPath = Path.Combine(requestDirectory, request.RequestId + ".json"), responsePath = Path.Combine(responseDirectory, request.RequestId + ".json");
+        log?.Invoke("icall_send_started", new { request.RequestId, request.Action, timeoutMs = timeout.TotalMilliseconds });
         if (File.Exists(requestPath))
         {
             var existing = await ReadAsync<ICallRequest>(requestPath, token);
@@ -47,6 +49,7 @@ public sealed class ICallFileClient
                 using (var stream = new FileStream(temp, FileMode.CreateNew, FileAccess.Write, FileShare.None))
                 { JsonSerializer.Serialize(stream, request, Json); stream.Flush(true); }
                 token.ThrowIfCancellationRequested(); File.Move(temp, requestPath, false);
+                log?.Invoke("icall_request_written", new { request.RequestId });
             }
             finally { if (File.Exists(temp)) File.Delete(temp); }
         }
@@ -60,12 +63,14 @@ public sealed class ICallFileClient
                 string? expectedPatientId = request.Action == "find_candidates" ? null : request.PatientId;
                 if (response.RequestId != request.RequestId || response.PatientId != expectedPatientId || response.RequestFingerprint != request.Fingerprint())
                     throw new InvalidDataException("iCallManagerの応答が要求と一致しません。");
+                log?.Invoke("icall_response_received", new { request.RequestId, response.Code, response.CompletedAt, waitMs = watch.Elapsed.TotalMilliseconds });
                 return response;
             }
             catch (FileNotFoundException) { }
             catch (JsonException) { } // A partially written response is retried; never treated as a result.
             await Task.Delay(200, token).ConfigureAwait(false);
         }
+        log?.Invoke("icall_timeout", new { request.RequestId, waitMs = watch.Elapsed.TotalMilliseconds });
         throw new TimeoutException("iCall応答待ち。同じrequestIdで結果を再確認します。");
     }
     private static async Task<T> ReadAsync<T>(string path, CancellationToken token)

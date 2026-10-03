@@ -95,13 +95,39 @@ public sealed class ICallAutomation(AppSettings settings) : IReservationAdapter
                 throw new BridgeException("framework_not_found", "対象画面にIEモードの要素が見つかりません。");
             return capture;
         }
-        catch { capture.Dispose(); throw; }
+        catch (Exception ex)
+        {
+            OperationalLog.Write("uia_tree_failed", new { error = ex.GetType().Name, code = (ex as BridgeException)?.Code, nodes = capture.Elements.Count });
+            capture.Dispose(); throw;
+        }
     }
 
     public IReadOnlyList<Reservation> Read()
     {
+        var watch = System.Diagnostics.Stopwatch.StartNew();
         using var capture = ReadTree();
-        return RowParser.Parse(capture.Root, settings).Select(r => r.Reservation).ToArray();
+        double treeMs = watch.Elapsed.TotalMilliseconds;
+        try
+        {
+            var rows = RowParser.Parse(capture.Root, settings).Select(r => r.Reservation).ToArray();
+            OperationalLog.Write("uia_read", new { treeMs, totalMs = watch.Elapsed.TotalMilliseconds, nodes = capture.Elements.Count, rows = rows.Length });
+            return rows;
+        }
+        catch (BridgeException ex)
+        {
+            // Preserve the exact tree that failed, rather than reading a potentially different page again.
+            int changed = 0, unavailable = 0;
+            foreach (var node in capture.Root.Descendants().Where(n => n.ControlType == 50020 || n.Role == 29).Take(100))
+            {
+                try { if ((capture.Elements[node.Key].CurrentName ?? "").Trim() != node.Name) changed++; }
+                catch (COMException) { unavailable++; }
+            }
+            string? diagnostic = OperationalLog.SaveFailureTree($"at={DateTimeOffset.Now:O} code={ex.Code} treeMs={treeMs:F1} changedSample={changed} unavailableSample={unavailable}\r\n" + FormatTree(capture.Root));
+            OperationalLog.Write("uia_parse_failed", new { ex.Code, treeMs, totalMs = watch.Elapsed.TotalMilliseconds, nodes = capture.Elements.Count,
+                settings.ReceptionNoColumn, settings.PatientIdColumn, settings.PatientNameColumn,
+                changedSample = changed, unavailableSample = unavailable, diagnostic });
+            throw;
+        }
     }
 
     public void Invoke(Reservation expected, string action, Func<bool> mayInvoke)
@@ -255,13 +281,17 @@ public sealed class ICallAutomation(AppSettings settings) : IReservationAdapter
     public string Diagnose()
     {
         using var capture = ReadTree();
+        return FormatTree(capture.Root);
+    }
+    private static string FormatTree(UiNode root)
+    {
         var output = new StringBuilder("画面構造診断（患者情報を含みます。外部への共有前に匿名化してください）\r\n");
         void Dump(UiNode n, int depth)
         {
             output.AppendLine($"{new string(' ', depth * 2)}#{n.Key} type={n.ControlType} role={n.Role} enabled={n.Enabled} framework={n.Framework} name=[{n.Name}] id=[{n.AutomationId}] help=[{n.HelpText}] value=[{n.Value}]");
             foreach (var c in n.Children) Dump(c, depth + 1);
         }
-        Dump(capture.Root, 0);
+        Dump(root, 0);
         return output.ToString();
     }
 
