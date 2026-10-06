@@ -47,6 +47,8 @@ public sealed class KioskWebServer(KioskSessions sessions, Func<bool> available)
             session.Title, session.Message, category = session.Category.ToString(), session.ExpiresAt,
             needsInput = session.MonthDayOnly && session.MonthDayAnswers is null && session.State == KioskSessionState.WaitingForXml,
             confirmedName = session.ConfirmedName,
+            page = session.MonthDayOnly && session.MonthDayAnswers is null && session.State == KioskSessionState.WaitingForXml
+                ? session.Options.Flow.Page(session.FlowPageId ?? session.Options.Flow.FirstPageId) : null,
             waiting = session.State is KioskSessionState.WaitingForXml or KioskSessionState.LookingUp };
         web.MapGet("/", (HttpContext context) =>
         {
@@ -57,9 +59,11 @@ public sealed class KioskWebServer(KioskSessions sessions, Func<bool> available)
         web.MapGet("/kiosk.js", () => Asset("kiosk.js", "text/javascript; charset=utf-8"));
         web.MapGet("/kiosk.css", () => Asset("kiosk.css", "text/css; charset=utf-8"));
         web.MapGet("/api/health", () => Results.Ok(new { available = available(), testMode = true }));
+        web.MapGet("/api/display", () => { var flow = sessions.DisplayOptions().Flow; return Results.Ok(new { flow.StartTitle, flow.StartMessage, flow.StartButton }); });
         web.MapGet("/api/current", (HttpContext context) => Results.Ok(new { session = sessions.Current(Device(context)) is { } current ? View(current) : null }));
         web.MapPost("/api/sessions", (HttpContext context, StartKioskRequest request) => Results.Ok(View(sessions.Start(Device(context), request.CommandId, request.Answers))));
         web.MapPost("/api/sessions/{id}/answers", (HttpContext context, string id, KioskMonthDayAnswers answers) => Results.Ok(View(sessions.SubmitAnswers(id, Device(context), answers))));
+        web.MapPost("/api/sessions/{id}/page", (HttpContext context, string id, KioskFlowAnswer answer) => Results.Ok(View(sessions.AnswerPage(id, Device(context), answer))));
         web.MapGet("/api/sessions/{id}", (HttpContext context, string id) => Results.Ok(View(sessions.Get(id, Device(context)))));
         web.MapPost("/api/sessions/{id}/cancel", (HttpContext context, string id) => Results.Ok(View(sessions.End(id, Device(context), true))));
         web.MapPost("/api/sessions/{id}/acknowledge", (HttpContext context, string id) => Results.Ok(View(sessions.End(id, Device(context), false))));

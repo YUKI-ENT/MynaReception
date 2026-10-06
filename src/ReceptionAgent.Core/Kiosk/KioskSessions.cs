@@ -22,6 +22,10 @@ public sealed class KioskSession
     public string PatientId { get; set; } = "";
     public string ReceptionNo { get; set; } = "";
     public KioskOptions Options { get; set; } = new();
+    public string? FlowPageId { get; set; }
+    public bool UsesFlow { get; set; }
+    public Dictionary<string, string> Variables { get; set; } = [];
+    public Dictionary<string, KioskFlowAnswer> FlowAnswers { get; set; } = [];
     public KioskSessionState State { get; set; } = KioskSessionState.WaitingForXml;
     public long Version { get; set; } = 1;
     public DateTimeOffset StartedAt { get; set; }
@@ -51,6 +55,32 @@ public sealed class KioskSessions
         cmd.ExecuteNonQuery();
     }
     private SqliteConnection Open() { var connection = new SqliteConnection(connectionString); connection.Open(); return connection; }
+    public KioskReceipt Receipt(string id, string device)
+    {
+        lock (gate)
+        {
+            var session = Get(id, device);
+            if (session.StartedAt.LocalDateTime.Date != clock().LocalDateTime.Date)
+                throw new InvalidOperationException("受付済み証は当日の受付のみ印刷できます。");
+            if (session.CaptureId is not { } captureId) throw new InvalidOperationException("顔認証XMLをまだ確認できていません。");
+            return KioskReceipt.Create(session, captures.Get(captureId));
+        }
+    }
+    public KioskReceptionOutput ReceptionOutput(string id, string device)
+    {
+        lock (gate)
+        {
+            var s = Get(id, device);
+            var capture = s.CaptureId is { } captureId ? captures.Get(captureId) : null;
+            int? Number(string key) => s.Variables.TryGetValue(key, out var value) && int.TryParse(value, out var number) ? number : null;
+            bool? Flag(string key) => s.Variables.TryGetValue(key, out var value) && bool.TryParse(value, out var flag) ? flag : null;
+            return new(s.Id, s.CaptureId, capture?.FileName, string.IsNullOrEmpty(s.PatientId) ? null : s.PatientId,
+                string.IsNullOrEmpty(s.ReceptionNo) ? null : s.ReceptionNo,
+                s.MonthDayAnswers?.Month ?? Number("month"), s.MonthDayAnswers?.Day ?? Number("day"),
+                s.MonthDayAnswers?.SaysReserved ?? Flag("saysReserved"), s.MonthDayAnswers?.HasFever ?? Flag("hasFever"),
+                s.Variables.GetValueOrDefault("clinicClass"), s.Category, s.State, new Dictionary<string, string>(s.Variables));
+        }
+    }
     public IReadOnlyList<KioskSession> List()
     {
         lock (gate)
@@ -122,8 +152,58 @@ public sealed class KioskSessions
             var session = new KioskSession { Device = device, CommandId = commandId, Answers = answers ?? new("", "", false), MonthDayOnly = answers is null,
                 StartedAt = clock(), ExpiresAt = clock().AddSeconds(settings.FaceTimeoutSeconds), Options = settings };
             session.XmlWindowExpiresAt = session.ExpiresAt;
+            if (session.MonthDayOnly) session.FlowPageId = settings.Flow.FirstPageId;
             Save(session, true); return session;
         }
+    }
+    public KioskOptions DisplayOptions() { var settings = options(); settings.Validate(); return settings; }
+    public KioskSession AnswerPage(string id, string device, KioskFlowAnswer answer)
+    {
+        lock (gate)
+        {
+            var session = Get(id, device);
+            if (answer is null || string.IsNullOrWhiteSpace(answer.PageId)) throw new ArgumentException("ページを指定してください。");
+            if (session.FlowAnswers.TryGetValue(answer.PageId, out var previous))
+            {
+                if (previous != answer) throw new InvalidOperationException("回答済みのページは変更できません。");
+                return session;
+            }
+            if (!session.MonthDayOnly || session.State != KioskSessionState.WaitingForXml || session.MonthDayAnswers is not null || session.FlowPageId != answer.PageId)
+                throw new InvalidOperationException("現在表示しているページから回答してください。");
+            var page = session.Options.Flow.Page(answer.PageId);
+            if (page.Kind == KioskPageKind.Birthday)
+            {
+                if (answer.ChoiceId is not null || answer.Month is not (>= 1 and <= 12) || answer.Day is null || answer.Day < 1 || answer.Day > DateTime.DaysInMonth(2000, answer.Month.Value))
+                    throw new ArgumentException("誕生月日を確認してください。");
+                session.Variables["month"] = answer.Month.Value.ToString(CultureInfo.InvariantCulture);
+                session.Variables["day"] = answer.Day.Value.ToString(CultureInfo.InvariantCulture);
+            }
+            else if (page.Kind == KioskPageKind.Choice)
+            {
+                var choice = page.Choices.SingleOrDefault(c => c.Id == answer.ChoiceId);
+                if (choice is null || answer.Month is not null || answer.Day is not null) throw new ArgumentException("選択肢を確認してください。");
+                session.Variables[page.Variable] = choice.Value;
+            }
+            else if (page.Kind != KioskPageKind.Card || answer.ChoiceId is not null || answer.Month is not null || answer.Day is not null)
+                throw new ArgumentException("このページには回答できません。");
+            session.UsesFlow = true;
+            session.FlowAnswers[page.Id] = answer;
+            var next = session.Options.Flow.Page(session.Options.Flow.Next(page, session.Variables));
+            session.FlowPageId = next.Id;
+            session.Title = next.Title; session.Message = next.Message; session.Version++;
+            if (next.Kind == KioskPageKind.Guidance) ApplyFlowGuidance(session, next);
+            Save(session);
+            if (next.Kind == KioskPageKind.Lookup)
+                return SubmitAnswers(id, device, new(int.Parse(session.Variables["month"], CultureInfo.InvariantCulture), int.Parse(session.Variables["day"], CultureInfo.InvariantCulture),
+                    bool.Parse(session.Variables["hasFever"]), bool.Parse(session.Variables["saysReserved"])));
+            return session;
+        }
+    }
+    private static void ApplyFlowGuidance(KioskSession session, KioskFlowPage page)
+    {
+        session.FlowPageId = page.Id; session.Title = page.Title; session.Message = page.Message;
+        session.State = page.NextStep == KioskNextStep.Finish && session.Category == ReceptionCategory.ReturningWithReservation
+            ? KioskSessionState.Guidance : KioskSessionState.StaffHelp;
     }
     public KioskSession SubmitAnswers(string id, string device, KioskMonthDayAnswers answers)
     {
@@ -222,6 +302,14 @@ public sealed class KioskSessions
                             var rule = session.Options.Rules.Single(r => r.Category == session.Category);
                             session.Title = rule.Title; session.Message = rule.Message;
                             session.State = rule.NextStep == KioskNextStep.Finish ? KioskSessionState.Guidance : KioskSessionState.StaffHelp;
+                            if (session.UsesFlow && session.FlowPageId is { } flowPage)
+                            {
+                                session.Variables["category"] = session.Category.ToString();
+                                session.Variables["hasChart"] = capture.ChartNumberFoundAtReception == true ? "true" : "false";
+                                session.Variables["actualReservation"] = capture.ReservationFoundAtReception == true ? "true" : "false";
+                                var lookupPage = session.Options.Flow.Page(flowPage);
+                                ApplyFlowGuidance(session, session.Options.Flow.Page(session.Options.Flow.Next(lookupPage, session.Variables)));
+                            }
                             if (session.MonthDayAnswers?.HasFever == true)
                                 ToStaff(session, "発熱があると回答されています。受付へお声掛けください。");
                             else if (session.MonthDayAnswers is { } input && capture.ReservationFoundAtReception != input.SaysReserved)

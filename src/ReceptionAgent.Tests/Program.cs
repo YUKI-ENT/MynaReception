@@ -4,6 +4,8 @@ using ReceptionAgent.Oqs;
 using ReceptionAgent.Oqs.ReferenceNumber;
 using ReceptionAgent.Dynamics;
 
+if (args.Contains("--kiosk-flow-preview")) { await KioskFlowTests.Preview(); return; }
+
 int checks = 0;
 void Check(bool pass, string name) { if (!pass) throw new Exception(name); checks++; Console.WriteLine("PASS: " + name); }
 var target = new ReferenceRegistrationTarget("00011", "00123456", "記号<&>", "000123", "00");
@@ -86,4 +88,6 @@ await ReconciliationTests.Run(Check);
 await QualificationResultTests.Run(Check);
 await ReceptionClassificationTests.Run(Check);
 await KioskTests.Run(Check);
+await KioskFlowTests.Run(Check);
+KioskReceptionOutputTests.Run(Check);
 Console.WriteLine($"All {checks} checks passed (synthetic data only).");

@@ -10,7 +10,7 @@
 
 取得時間はXMLファイル名の生成時刻から受付分類確定までです。XMLを発見する前の時間、書込み完了確認、処理順番待ち、Dynamics検索、iCall応答待ちを含みます。XML生成側とReceptionAgentのPCの時計差も含むため、発見前の時間をファイル共有の遅延と断定できません。
 
-ReceptionAgentは約1秒間隔でフォルダーを走査し、通常300ms間隔で2回同じXMLを読めた時に取得します。走査には共有フォルダーへのアクセス時間が加わります。処理は直列なので他の患者の処理待ちもあります。iCall findの応答待ちは2秒、タイムアウト後は10秒後に同じ要求IDで再確認します。iCall側UI Automationの読取または定期同期の待ちが長い場合、15秒程度になる可能性があります。今回、タイムアウトや実操作の再試行方針は変更していません。
+ReceptionAgentは約1秒間隔でフォルダーを走査し、通常300ms間隔で2回同じXMLを読めた時に取得します。走査には共有フォルダーへのアクセス時間が加わります。処理は直列なので他の患者の処理待ちもあります。iCall findの応答待ちは2秒、タイムアウト後は10秒後に同じ要求IDで再確認します。旧版ではiCall側UI Automationの読取または定期同期の待ちで15秒程度になることがありました。現在のiCallManagerは `find` / `find_candidates` を正常同期済みキャッシュで応答し、要求時のUI読取・UIA待ち行列を省きます。ReceptionAgentのタイムアウトや実操作の再試行方針は変更していません。
 
 ## ReceptionAgent
 
@@ -29,7 +29,7 @@ ReceptionAgentは約1秒間隔でフォルダーを走査し、通常300ms間隔
 
 `%LOCALAPPDATA%\iCallManager\Logs\automation-yyyyMMdd.jsonl`
 
-`bridge_received` → `request_queued` → `request_started` → `uia_read` または `uia_parse_failed` → `request_completed` → `bridge_response_written` を要求IDと時刻で対応付けます。UI読取のログは同じ専用スレッドで発生します。定期同期のUI読取も記録されます。
+予約照会は `bridge_received` → `request_queued` → `request_started` → `lookup_cache` → `request_completed` → `bridge_response_written` を要求IDと時刻で対応付けます。`lookup_cache` の `usable`・`lastSuccess`・`ageMs`・`rows` で使用データを確認できます。実操作は `uia_read` または `uia_parse_failed` を記録し、UI読取は同じ専用スレッドで発生します。定期同期のUI読取も記録されます。同期に失敗しても正常キャッシュは保持しますが、2分以上更新できていない場合や日付が変わった場合は照会に使用しません。
 
 構造解析に失敗すると、その解析に使用した同一のUIツリーを `layout-yyyyMMdd-*.txt` に保存します。後から画面を読み直した診断ではないため、失敗時の見出し・列・ダイアログを確認できます。`changedSample` は最初の最大100個の文字要素を再照合して変化した件数、`unavailableSample` は再照合時に取得できなかった件数です。変化があれば表示切替の手掛かりになりますが、ゼロでも表示切替を否定できません。ツリー取得前のエラーではツリーは保存できません。
 

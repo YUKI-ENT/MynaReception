@@ -24,6 +24,7 @@ internal static class CandidateSearchTests
             new("15", "-", "-", "6", false, true)
         ] };
         using var service = new ReservationService(() => adapter);
+        await service.SyncAsync();
         var request = new BridgeRequest("candidate-1", "find_candidates")
         { PatientName = "架空 花子", NameKana = "テスト ハナコ", GivenName = "はなこ", Birthdate = "1976-09-25" };
         var withoutId = JsonSerializer.Deserialize<BridgeRequest>("""
@@ -46,7 +47,8 @@ internal static class CandidateSearchTests
         check(invalid.Code == "invalid_request" && noName.Code == "invalid_request" && adapter.Threads.Count == reads,
             "invalid candidate request rejected before reading UI");
         adapter.ThrowOnRead = true;
-        check((await service.ExecuteAsync(request)).Code == "automation_unavailable", "failed live read never serves cached candidates");
+        try { await service.SyncAsync(); } catch (InvalidOperationException) { }
+        check((await service.ExecuteAsync(request)).Candidates?.Count == 3, "failed sync retains recent cached candidates");
         adapter.ThrowOnRead = false;
         check(adapter.Invocations == 0 && !service.OperationsEnabled, "candidate API works with operations disabled and never invokes buttons");
 

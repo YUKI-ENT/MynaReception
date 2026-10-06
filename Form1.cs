@@ -119,6 +119,8 @@ public partial class Form1 : Form
             Log("起動時は読取専用です。ログイン済みの当日受付一覧を表示してください。");
             Log("要求フォルダー: " + Path.Combine(settings.BridgeDirectory, "request"));
             Log("設定: " + AppSettings.SettingsPath);
+            await SyncAsync();
+            if (closing) return;
             try
             {
                 var bridge = new FileBridge(settings.BridgeDirectory, Path.Combine(AppSettings.DataDirectory, "State"), service.ExecuteAsync, Log);
@@ -134,7 +136,6 @@ public partial class Form1 : Form
             }
             catch (Exception ex) { Log("SMB開始失敗: " + ex.Message); }
             timer.Start();
-            await SyncAsync();
         };
         FormClosing += (_, _) => { closing = true; timer.Stop(); service.OperationsEnabled = false; shutdown.Cancel(); service.Dispose(); };
         UpdateButtons();

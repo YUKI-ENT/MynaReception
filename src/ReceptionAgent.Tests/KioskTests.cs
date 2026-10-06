@@ -70,7 +70,7 @@ internal static class KioskTests
         using var handler = new HttpClientHandler { CookieContainer = new CookieContainer() };
         using var client = new HttpClient(handler) { BaseAddress = new Uri(server.Url) };
         var page = await client.GetAsync("/"); string html = await page.Content.ReadAsStringAsync();
-        check(page.IsSuccessStatusCode && html.Contains("お誕生日（月・日）") && !html.Contains("氏名カナ") && page.Headers.CacheControl?.NoStore == true,
+        check(page.IsSuccessStatusCode && html.Contains("page-controls") && html.Contains("マイナ受付開始") && !html.Contains("氏名カナ") && page.Headers.CacheControl?.NoStore == true,
             "real HTTP server serves embedded Kiosk HTML with no-store headers");
         using var emptyCurrent = JsonDocument.Parse(await client.GetStringAsync("/api/current"));
         check(emptyCurrent.RootElement.GetProperty("session").ValueKind == JsonValueKind.Null, "new browser gets parseable JSON for no active session");

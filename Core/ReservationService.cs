@@ -12,13 +12,18 @@ public sealed class ReservationService : IDisposable
     private IReservationAdapter? adapter;
     private volatile bool operationsEnabled;
     private SyncSnapshot snapshot = new(null, false, [], "未同期");
+    private SyncSnapshot? lookupCache;
+    private readonly TimeProvider timeProvider;
+    private int disposed;
+    private static readonly TimeSpan LookupCacheLifetime = TimeSpan.FromMinutes(2);
     public SyncSnapshot Snapshot => Volatile.Read(ref snapshot);
     public bool OperationsEnabled { get => operationsEnabled; set => operationsEnabled = value; }
 
-    public ReservationService(Func<IReservationAdapter> factory, ITicketPrinter? printer = null)
+    public ReservationService(Func<IReservationAdapter> factory, ITicketPrinter? printer = null, TimeProvider? timeProvider = null)
     {
         this.factory = factory;
         this.printer = printer ?? new UnconfiguredTicketPrinter();
+        this.timeProvider = timeProvider ?? TimeProvider.System;
         worker = new Thread(Run) { IsBackground = true, Name = "iCall UI Automation" };
         worker.SetApartmentState(ApartmentState.MTA);
         worker.Start();
@@ -52,8 +57,12 @@ public sealed class ReservationService : IDisposable
         try
         {
             adapter ??= factory();
-            var rows = adapter.Read().ToArray();
-            Volatile.Write(ref snapshot, new(DateTimeOffset.Now, true, rows, $"同期成功: {rows.Length}件"));
+            var rows = Array.AsReadOnly(adapter.Read().ToArray());
+            // Replace the whole list, including an empty list. Removed patients and reused
+            // afternoon reception numbers must never be merged with earlier reservations.
+            var updated = new SyncSnapshot(timeProvider.GetLocalNow(), true, rows, $"同期成功: {rows.Count}件");
+            Volatile.Write(ref lookupCache, updated);
+            Volatile.Write(ref snapshot, updated);
             return rows;
         }
         catch
@@ -71,7 +80,7 @@ public sealed class ReservationService : IDisposable
     {
         var queued = System.Diagnostics.Stopwatch.StartNew();
         OperationalLog.Write("request_queued", new { request.RequestId, request.Action });
-        return Enqueue(() =>
+        OperationResult RunRequest()
         {
             double queueMs = queued.Elapsed.TotalMilliseconds;
             OperationalLog.Write("request_started", new { request.RequestId, request.Action, queueMs });
@@ -83,7 +92,30 @@ public sealed class ReservationService : IDisposable
                 return result;
             }
             finally { OperationalLog.RequestId = null; }
-        }, ct);
+        }
+        // Read-only requests use an immutable snapshot without waiting behind UIA work.
+        if (request.Action is "find" or "find_candidates")
+        {
+            if (ct.IsCancellationRequested) return Task.FromCanceled<OperationResult>(ct);
+            if (Volatile.Read(ref disposed) != 0)
+                return Task.FromException<OperationResult>(new ObjectDisposedException(nameof(ReservationService)));
+            return Task.FromResult(RunRequest());
+        }
+        return Enqueue(RunRequest, ct);
+    }
+
+    private IReadOnlyList<Reservation> ReadLookupCache(BridgeRequest request)
+    {
+        var cached = Volatile.Read(ref lookupCache);
+        var now = timeProvider.GetLocalNow();
+        var age = cached?.LastSuccess is { } lastSuccess ? now - lastSuccess : (TimeSpan?)null;
+        bool usable = cached is not null && age.HasValue && age.Value >= TimeSpan.Zero &&
+            age.Value < LookupCacheLifetime && cached.LastSuccess!.Value.Date == now.Date;
+        OperationalLog.Write("lookup_cache", new { request.RequestId, request.Action, usable,
+            lastSuccess = cached?.LastSuccess, ageMs = age?.TotalMilliseconds, rows = cached?.Rows.Count });
+        if (!usable)
+            throw new BridgeException("automation_unavailable", "予約キャッシュが未取得、または2分以上更新されていません。iCallManagerの同期状態を確認して「今すぐ同期」を実行してください。");
+        return cached!.Rows;
     }
 
     private OperationResult Execute(BridgeRequest request)
@@ -93,7 +125,7 @@ public sealed class ReservationService : IDisposable
             if (request.Action == "find_candidates")
             {
                 ReservationCandidateSearch.Validate(request);
-                return ReservationCandidateSearch.Search(request, Read());
+                return ReservationCandidateSearch.Search(request, ReadLookupCache(request));
             }
             if (string.IsNullOrWhiteSpace(request.PatientId) || request.PatientId.Length > 100)
                 return new(false, "invalid_request", "patientIdを指定してください。");
@@ -102,11 +134,14 @@ public sealed class ReservationService : IDisposable
             if (request.Action != "find" && !operationsEnabled)
                 return new(false, "operations_disabled", "アプリで実操作を有効にしてください。");
             if (request.Action == "assign") return Assign(request);
-            var matches = Read().Where(r => r.HasPatientIdentity && r.PatientId == request.PatientId).ToArray();
-            if (matches.Length == 0) return new(false, "not_found", "現在の一覧に該当患者がいません。");
+            var rows = request.Action == "find" ? ReadLookupCache(request) : Read();
+            var matches = rows.Where(r => r.HasPatientIdentity && r.PatientId == request.PatientId).ToArray();
+            if (matches.Length == 0) return new(false, "not_found", request.Action == "find"
+                ? "最後に同期した一覧に該当患者がいません。新しい予約は次回同期後に反映されます。"
+                : "現在の一覧に該当患者がいません。");
             if (matches.Length != 1) return new(false, "ambiguous_patient", "同じ患者IDが複数行あります。職員が確認してください。");
             var row = matches[0];
-            if (request.Action == "find") return new(true, "found", "予約を取得しました。", row);
+            if (request.Action == "find") return new(true, "found", "最後に同期した一覧から予約を取得しました。", row);
             if (request.ExpectedReceptionNo != row.ReceptionNo || request.ExpectedPatientName != row.PatientName)
                 return new(false, "identity_changed", "find結果の受付番号・患者名と一致しません。再確認してください。");
             if (!operationsEnabled) return new(false, "operations_disabled", "実操作が無効になりました。");
@@ -200,6 +235,7 @@ public sealed class ReservationService : IDisposable
 
     public void Dispose()
     {
+        if (Interlocked.Exchange(ref disposed, 1) != 0) return;
         operationsEnabled = false;
         queue.CompleteAdding();
         // UIA providers may hang; the background thread must not block application shutdown.

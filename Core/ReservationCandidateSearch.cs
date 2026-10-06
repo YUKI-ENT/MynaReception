@@ -42,7 +42,7 @@ public static class ReservationCandidateSearch
         }
         var sorted = candidates.OrderBy(c => c.NameMatch switch { "full_name" => 0, "given_name_suffix" => 1, _ => 2 }).ToArray();
         return new(true, sorted.Length == 0 ? "no_candidates" : "candidates_found",
-            "現在の一覧の氏名欄に生年月日を含む予約のみ検索しました。候補は本人確認が必要です。該当なしでも予約なし・初診とは断定できません。")
+            "最後に同期した一覧の氏名欄に生年月日を含む予約のみ検索しました。候補は本人確認が必要です。該当なしでも予約なし・初診とは断定できません。")
         { Candidates = sorted };
     }
 

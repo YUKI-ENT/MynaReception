@@ -123,7 +123,8 @@ var fake = new FakeAdapter { Rows = [patient] };
 using (var service = new ReservationService(() => fake))
 {
     BridgeRequest Request(string action, string? name = "テスト患者") => new(Guid.NewGuid().ToString("N"), action, "00011", "36", name);
-    Check((await service.ExecuteAsync(Request("find"))).Reservation == patient, "find returns current reservation");
+    await service.SyncAsync();
+    Check((await service.ExecuteAsync(Request("find"))).Reservation == patient, "find returns synchronized reservation");
     Check((await service.ExecuteAsync(Request("arrived"))).Code == "operations_disabled" && fake.Invocations == 0, "read-only default");
     service.OperationsEnabled = true;
     Check((await service.ExecuteAsync(Request("arrived", "別の患者"))).Code == "identity_changed" && fake.Invocations == 0, "mismatch never invokes");
@@ -157,7 +158,8 @@ using (var service = new ReservationService(() => fake))
     Check((await service.ExecuteAsync(Request("arrived"))).Code == "outcome_unknown", "invoke failure is uncertain");
     fake.ThrowOnInvoke = false;
     fake.ThrowOnRead = true;
-    Check((await service.ExecuteAsync(Request("find"))).Code == "automation_unavailable" && !service.Snapshot.IsCurrent, "stale data never returned by find");
+    try { await service.SyncAsync(); } catch (InvalidOperationException) { }
+    Check((await service.ExecuteAsync(Request("find"))).Success && !service.Snapshot.IsCurrent, "temporary sync failure retains recent lookup cache");
     fake.ThrowOnRead = false;
     Check((await service.ExecuteAsync(Request("guide"))).Code == "unsupported_action", "guide excluded");
     Check((await service.ExecuteAsync(Request("print"))).Code == "printing_not_configured", "printer remains replaceable and explicit");
@@ -238,6 +240,7 @@ using (var bridge = new FileBridge(share, state, Execute, _ => { }))
 }
 await AssignmentTests.Run(Check);
 await CandidateSearchTests.Run(Check);
+await LookupCacheTests.Run(Check);
 Console.WriteLine($"All {checks} checks passed. Synthetic test files: {testRoot}");
 
 sealed class FakeAdapter : IReservationAdapter

@@ -13,6 +13,7 @@ public sealed class KioskRule
 }
 public sealed class KioskOptions
 {
+    public KioskFlow Flow { get; set; } = new();
     public int Port { get; set; } = 5180;
     public int FaceTimeoutSeconds { get; set; } = 60;
     public int LookupTimeoutSeconds { get; set; } = 60;
@@ -27,6 +28,8 @@ public sealed class KioskOptions
         } }).ToList();
     public void Validate()
     {
+        if (Flow is null) throw new ArgumentException("画面フローを設定してください。");
+        Flow.Validate();
         if (Port is < 1024 or > 65535 || FaceTimeoutSeconds is < 15 or > 300 || LookupTimeoutSeconds is < 15 or > 300)
             throw new ArgumentException("ポートは1024～65535、待機時間は15～300秒で指定してください。");
         var categories = Enum.GetValues<ReceptionCategory>().Where(c => c is not (ReceptionCategory.Pending or ReceptionCategory.NeedsReview)).ToArray();
