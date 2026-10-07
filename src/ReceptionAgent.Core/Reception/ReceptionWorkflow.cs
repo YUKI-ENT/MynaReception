@@ -3,7 +3,7 @@ using ReceptionAgent.ICall;
 
 namespace ReceptionAgent.Reception;
 
-public sealed class ReceptionWorkflow(CaptureStore store, Func<FaceIdentity, CancellationToken, Task<FaceLookupResult>> lookup)
+public sealed class ReceptionWorkflow(CaptureStore store, Func<FaceIdentity, CancellationToken, Task<FaceLookupResult>> lookup, AgentSettings? settings = null)
 {
     public async Task StepAsync(CaptureRecord record, CancellationToken token)
     {
@@ -17,13 +17,23 @@ public sealed class ReceptionWorkflow(CaptureStore store, Func<FaceIdentity, Can
         try { await StepCoreAsync(store.Get(id), token); }
         finally { store.WorkflowGate.Release(); }
     }
-    public async Task QueueManualAsync(string id, string action, CancellationToken token)
+    public Task QueueManualAsync(string id, string action, CancellationToken token) => QueueOperationAsync(id, action, null, token);
+    internal Task QueueKioskAsync(Kiosk.KioskSession session, string action, CancellationToken token) =>
+        QueueOperationAsync(session.CaptureId ?? throw new InvalidDataException("Kiosk受付のXMLがありません。"), action, session, token);
+    private async Task QueueOperationAsync(string id, string action, Kiosk.KioskSession? session, CancellationToken token)
     {
         if (action is not ("arrived" or "link")) throw new ArgumentException("操作が不正です。");
         await store.WorkflowGate.WaitAsync(token);
         try
         {
             var record = store.Get(id);
+            if (session is not null && (!Kiosk.KioskAutomationEligibility.IsEligible(session, record, DateTimeOffset.Now) ||
+                session.Automation is null || session.Automation.NeedsReview))
+                throw new InvalidDataException("Kiosk自動受付の条件を満たしていません。職員が確認してください。");
+            if (action == "link" && settings?.ReceptionLinkMode == ReceptionLinkMode.None)
+                throw new InvalidDataException("設定で受付連携が無効になっています。");
+            if (action == "link" && record.DynamicsReceiptDirectory.Length > 0)
+                throw new InvalidDataException("受付ファイル出力は受付済みです。重複出力は行いません。");
             if (record.ReconciliationIdentityMismatch || record.VerifiedPatientId.Length > 0 && record.VerifiedPatientId != record.Lookup?.Selected?.PatientId)
                 throw new InvalidDataException("Dynamics再検証のカルテ番号が受付時と異なります。職員が予約・受付を確認してください。");
             if (record.Conflict || record.GeneratedAt.Date != DateTime.Today || record.Lookup?.Selected is null ||
@@ -36,8 +46,21 @@ public sealed class ReceptionWorkflow(CaptureStore store, Func<FaceIdentity, Can
             }
             if (record.Stage != CaptureStage.Completed || record.Responses.Any(r => r.RequestId == "ra-" + record.Id + "-" + action))
                 throw new InvalidDataException("未完了、または操作結果が記録済みです。重複要求は行いません。");
+            if (action == "link" && settings?.ReceptionLinkMode == ReceptionLinkMode.DirectOutput)
+            {
+                string folder = AgentSettings.NormalizeRoot(settings.DynamicsReceiptDirectory);
+                string line = DynamicsReceiptOutput.Format(record.Lookup.Selected.PatientId, record.ReservationPatientName,
+                    record.GeneratedAt, DateTime.Now, record.ReceptionNo);
+                new DynamicsReceiptOutput().Enqueue(folder, record.Id, line);
+                record.DynamicsReceiptDirectory = folder;
+                record.LinkResult = "ファイル出力受付済み（Dynamics取込結果は未確認）";
+                record.Status = "直接出力受付済み／receipt.txtがある間は一時ファイルで待機";
+                store.Save(record);
+                return;
+            }
             Prepare(record, action, action == "arrived" ? CaptureStage.ArrivedWaiting : CaptureStage.LinkWaiting);
-            record.RetryAfter = default; record.ManualOperationRequested = true;
+            record.RetryAfter = default; record.ManualOperationRequested = session is null;
+            record.KioskAutomaticSessionId = session?.Id ?? "";
             store.Save(record);
         }
         finally { store.WorkflowGate.Release(); }
@@ -90,8 +113,11 @@ public sealed class ReceptionWorkflow(CaptureStore store, Func<FaceIdentity, Can
                 case CaptureStage.ArrivedWaiting:
                 case CaptureStage.LinkWaiting:
                     var request = record.PendingRequest ?? throw new InvalidDataException("保存済み要求がありません。");
-                    if (request.Action is "arrived" or "link" && !record.ManualOperationRequested)
+                    if (request.Action is "arrived" or "link" && !record.ManualOperationRequested && record.KioskAutomaticSessionId.Length == 0)
                         throw new InvalidDataException("旧設定による自動操作要求を停止しました。iCallManager側の処理結果を確認してください。");
+                    if (request.Action is "arrived" or "link" && (record.ReconciliationIdentityMismatch ||
+                        record.VerifiedPatientId.Length > 0 && record.VerifiedPatientId != request.PatientId))
+                        throw new InvalidDataException("送信前のカルテ番号再検証に不整合があります。職員が確認してください。");
                     // The request was committed in the preceding step, before any external write.
                     record.ICallStartedAt ??= DateTimeOffset.Now;
                     store.Save(record);

@@ -37,7 +37,7 @@ internal sealed class KioskConsoleForm : Form
             ValueMember = "Value", DisplayMember = "Text", Width = 120 });
         rules.CellFormatting += (_, e) => { if (e.ColumnIndex == 0 && e.Value is Reception.ReceptionCategory category) { e.Value = Reception.ReceptionClassification.Label(category); e.FormattingApplied = true; } };
         layout.Controls.Add(rules, 0, 2);
-        layout.Controls.Add(new Label { AutoSize = true, MaximumSize = new Size(1030, 0), Text = "上の4分類案内は旧API用です。通常の質問・案内は「質問・画面フローを編集」で編集します。StaffHelp＝職員案内／Finish＝案内表示終了（受付完了操作ではありません）。本人照合・発熱・予約不一致の職員確認が優先されます。" }, 0, 3);
+        layout.Controls.Add(new Label { AutoSize = true, MaximumSize = new Size(1030, 0), Text = "上の4分類案内は旧API用です。通常の質問・案内は「質問・画面フローを編集」で編集します。StaffHelp＝職員案内／Finish＝完了案内。自動受付ONの場合、条件に合う再診・予約ありのFinishで自動処理します。本人照合・発熱・予約不一致の職員確認が優先されます。" }, 0, 3);
         var history = new DataGridView { Dock = DockStyle.Fill, ReadOnly = true, AllowUserToAddRows = false, AllowUserToDeleteRows = false,
             RowHeadersVisible = false, SelectionMode = DataGridViewSelectionMode.FullRowSelect, MultiSelect = false, AutoSizeColumnsMode = DataGridViewAutoSizeColumnsMode.DisplayedCells };
         layout.Controls.Add(history, 0, 4);
@@ -56,7 +56,8 @@ internal sealed class KioskConsoleForm : Form
                     カルテ番号 = s.PatientId, 予約番号 = s.ReceptionNo, 回答日時 = s.InputCompletedAt?.LocalDateTime,
                     開始日時 = s.StartedAt.LocalDateTime, 分類 = Reception.ReceptionClassification.Label(s.Category), 表示 = s.Message,
                     外来区分 = s.Variables.TryGetValue("clinicClass", out var clinic) ? s.Options.Flow.ValueLabel("clinicClass", clinic) : "未回答", フローページ = s.FlowPageId,
-                    回答変数 = string.Join(" / ", s.Variables.Select(v => s.Options.Flow.FieldLabel(v.Key) + "=" + s.Options.Flow.ValueLabel(v.Key, v.Value))), XML取込ID = s.CaptureId }).ToList();
+                    回答変数 = string.Join(" / ", s.Variables.Select(v => s.Options.Flow.FieldLabel(v.Key) + "=" + s.Options.Flow.ValueLabel(v.Key, v.Value))),
+                    自動受付 = s.Automation?.Message ?? "対象外／OFF", 自動連携 = s.Automation?.Link, 自動来院確認 = s.Automation?.Arrival, 自動発券 = s.Automation?.Print, XML取込ID = s.CaptureId }).ToList();
                 if (selectedId is not null) foreach (DataGridViewRow row in history.Rows)
                     if (row.Cells["セッションID"].Value as string == selectedId) { history.CurrentCell = row.Cells["状態"]; break; }
                 server.Text = "Webサーバー: " + (serverUrl().Length > 0 ? serverUrl() : "起動していません");
@@ -66,6 +67,12 @@ internal sealed class KioskConsoleForm : Form
         var commands = new FlowLayoutPanel { Dock = DockStyle.Fill, AutoSize = true };
         var save = new Button { Text = "案内設定を保存", AutoSize = true };
         var editFlow = new Button { Text = "質問・画面フローを編集", AutoSize = true };
+        var autoSettings = new Button { Text = "自動受付設定…", AutoSize = true };
+        autoSettings.Click += (_, _) =>
+        {
+            using var dialog = new KioskAutomationSettingsForm(MainForm.DataDirectory);
+            if (dialog.ShowDialog(this) == DialogResult.OK) { settings.Automation = KioskOptions.Load(MainForm.DataDirectory).Automation; result.Text = "自動受付設定を保存しました。新しい受付から適用します。"; }
+        };
         editFlow.Click += (_, _) =>
         {
             using var editor = new KioskFlowEditorForm(settings.Flow);
@@ -98,8 +105,22 @@ internal sealed class KioskConsoleForm : Form
             catch (Exception ex) { MessageBox.Show(this, ex.Message, "受付済み証"); }
         };
         var receiptSample = new Button { Text = "受付済み証のテスト見本…", AutoSize = true };
+        var review = new Button { Text = "自動受付の結果確認…", AutoSize = true };
+        review.Click += (_, _) =>
+        {
+            try
+            {
+                if (history.CurrentRow?.Cells["セッションID"].Value is not string id) throw new InvalidOperationException("受付を選択してください。");
+                var session = sessions.List().Single(s => s.Id == id);
+                if (session.Automation is not { NeedsReview: true }) throw new InvalidOperationException("職員確認待ちの自動受付を選択してください。");
+                if (MessageBox.Show(this, "iCall・連携ファイル・印刷キューと用紙を確認してください。\r\n未完了の操作は手動で対応し、自動再送は行いません。確認済みにしますか？\r\n\r\n" + session.Automation.Message,
+                    "自動受付の結果確認", MessageBoxButtons.OKCancel) != DialogResult.OK) return;
+                sessions.ConfirmAutomationReview(id, session.Device); Reload();
+            }
+            catch (Exception ex) { MessageBox.Show(this, ex.Message, "結果確認"); }
+        };
         receiptSample.Click += (_, _) => { using var form = new KioskReceiptForm(new("sample", "12345", "受付 太郎", "ウケツケ タロウ", "37", DateTimeOffset.Now), true); form.ShowDialog(this); };
-        commands.Controls.AddRange([editFlow, save, preview, open, cancel, receipt, receiptSample]); layout.Controls.Add(commands, 0, 5); layout.Controls.Add(result, 0, 6); Controls.Add(layout);
+        commands.Controls.AddRange([editFlow, autoSettings, save, preview, open, cancel, review, receipt, receiptSample]); layout.Controls.Add(commands, 0, 5); layout.Controls.Add(result, 0, 6); Controls.Add(layout);
         Shown += (_, _) => { Reload(); timer.Start(); }; timer.Tick += (_, _) => Reload();
         FormClosed += (_, _) => { timer.Stop(); timer.Dispose(); };
     }

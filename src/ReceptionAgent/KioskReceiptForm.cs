@@ -16,7 +16,7 @@ internal sealed class KioskReceiptForm : Form
         Size = new(660, 780); StartPosition = FormStartPosition.CenterParent;
         preview = new Bitmap(580, 1100);
         using (var g = Graphics.FromImage(preview))
-        { g.Clear(Color.White); Draw(g, new RectangleF(0, 0, 580, 540), "患者用"); Draw(g, new RectangleF(0, 560, 580, 540), "医院控え"); }
+        { g.Clear(Color.White); Draw(receipt, sample, g, new RectangleF(0, 0, 580, 540), "患者用"); Draw(receipt, sample, g, new RectangleF(0, 560, 580, 540), "医院控え"); }
         var image = new PictureBox { Image = preview, SizeMode = PictureBoxSizeMode.Zoom, Dock = DockStyle.Fill, BackColor = Color.LightGray };
         var actions = new FlowLayoutPanel { Dock = DockStyle.Bottom, AutoSize = true, Padding = new Padding(8) };
         var print = new Button { Text = "2枚を印刷…", AutoSize = true };
@@ -32,7 +32,7 @@ internal sealed class KioskReceiptForm : Form
         actions.Controls.AddRange([print, save, new Label { Text = "1回の印刷で患者用・医院控えを各1枚。再操作は再印刷です。", AutoSize = true }]);
         Controls.Add(image); Controls.Add(actions);
     }
-    private void Draw(Graphics graphics, RectangleF area, string copy)
+    internal static void Draw(KioskReceipt receipt, bool sample, Graphics graphics, RectangleF area, string copy)
     {
         var state = graphics.Save();
         graphics.TranslateTransform(area.X, area.Y);
@@ -86,7 +86,7 @@ internal sealed class KioskReceiptForm : Form
             {
                 // Graphics origin is at the hardware printable area; retain a small inner margin.
                 float scale = Math.Min(Math.Min(228, e.PageSettings.PrintableArea.Width) / 580, Math.Min(213, e.PageSettings.PrintableArea.Height) / 540);
-                Draw(e.Graphics!, new RectangleF(0, 0, 580 * scale, 540 * scale), page == 0 ? "患者用" : "医院控え");
+                Draw(receipt, sample, e.Graphics!, new RectangleF(0, 0, 580 * scale, 540 * scale), page == 0 ? "患者用" : "医院控え");
                 page++; e.HasMorePages = page < 2;
             };
             document.Print();

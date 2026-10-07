@@ -78,6 +78,14 @@ public sealed class CaptureStore
             dates.Add(DateOnly.ParseExact(reader.GetString(0), "yyyy-MM-dd", System.Globalization.CultureInfo.InvariantCulture));
         return dates;
     }
+    public IReadOnlyList<string> ReceiptOutputDirectories()
+    {
+        using var connection = Open(); using var command = connection.CreateCommand();
+        command.CommandText = "SELECT DISTINCT json_extract(data,'$.DynamicsReceiptDirectory') FROM captures WHERE json_extract(data,'$.DynamicsReceiptDirectory') <> ''";
+        using var reader = command.ExecuteReader(); var directories = new List<string>();
+        while (reader.Read()) directories.Add(reader.GetString(0));
+        return directories;
+    }
     public IReadOnlyList<CaptureRecord> List(bool pendingOnly = false, int limit = 500, DateOnly? date = null)
     {
         using var connection = Open(); using var command = connection.CreateCommand();

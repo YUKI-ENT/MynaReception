@@ -26,6 +26,16 @@ public sealed class AgentSettingsForm : Form
         var response = Folder("iCallManager responseフォルダー（res）", current.ICallResponseDirectory);
         var openResponse = new CheckBox { AutoSize = true, Text = "監視開始時にエクスプローラで開く", Checked = current.OpenResponseFolderOnMonitorStart };
         layout.Controls.Add(openResponse);
+        layout.Controls.Add(new Label { Text = "受付連携方式（一覧の連携ボタン）", AutoSize = true });
+        var linkMode = new ComboBox { DropDownStyle = ComboBoxStyle.DropDownList, Width = 300, AccessibleName = "受付連携方式" };
+        linkMode.Items.AddRange(["iCall連携", "直接出力（Shift_JIS / CP932）", "連携しない"]);
+        linkMode.SelectedIndex = (int)current.ReceptionLinkMode; layout.Controls.Add(linkMode);
+        var receipt = Folder("Dynamics受付出力フォルダー（receipt.txt）", current.DynamicsReceiptDirectory);
+        receipt.Enabled = current.ReceptionLinkMode == Reception.ReceptionLinkMode.DirectOutput;
+        linkMode.SelectedIndexChanged += (_, _) => receipt.Enabled = linkMode.SelectedIndex == 1;
+        var automation = new Button { Text = "Kiosk自動受付設定…（発券・連携・来院確認）", AutoSize = true };
+        automation.Click += (_, _) => { using var dialog = new KioskAutomationSettingsForm(MainForm.DataDirectory); dialog.ShowDialog(this); };
+        layout.Controls.Add(automation);
         layout.Controls.Add(new Label { Text = "face XMLの文字コード", AutoSize = true });
         var encoding = new ComboBox { DropDownStyle = ComboBoxStyle.DropDownList, Width = 220, AccessibleName = "face XMLの文字コード" };
         encoding.Items.AddRange(["UTF-8", "Shift_JIS（CP932）"]);
@@ -38,8 +48,8 @@ public sealed class AgentSettingsForm : Form
             Text = "当日の患者を低頻度でDynamics再検証する（自動登録ON時は照会番号も登録・訂正）" };
         layout.Controls.Add(reconcile);
         layout.Controls.Add(new Label { AutoSize = true, Text = "再検証は監視中の当日保存済みXMLが対象。取込5分後からWKO資格確認結果表示の確定カルテ番号を照合し、整合後は終了します。" });
-        layout.Controls.Add(new Label { AutoSize = true, Text = "設定変更は次回監視開始後に取り込むXMLへ適用します。登録結果は一覧で確認できます。" });
-        layout.Controls.Add(new Label { AutoSize = true, Text = "XML取得・患者照合・予約検索は自動です。来院確認・連携は一覧から手動で要求します。照会番号登録は手動、または上記設定で自動です。\r\niCallManager側の「実操作を有効化」も必要です。自動取込はファイル名の日付が当日のXMLです。" });
+        layout.Controls.Add(new Label { AutoSize = true, Text = "受付連携方式は次の連携操作から適用します。受付済みのファイル出力は設定変更後も配送を続けます。他の取込設定は次回監視開始後に取り込むXMLへ適用します。" });
+        layout.Controls.Add(new Label { AutoSize = true, Text = "XML取得・患者照合・予約検索は自動です。来院確認・連携は一覧から手動、またはKiosk自動受付設定で要求します。照会番号登録は手動、または上記設定で自動です。\r\n来院確認・iCall連携にはiCallManager側の「実操作を有効化」が必要です。直接出力の配送はアプリ起動中に継続します。自動取込は当日のXMLです。" });
         var buttons = new FlowLayoutPanel { AutoSize = true, Dock = DockStyle.Top, FlowDirection = FlowDirection.RightToLeft };
         var cancel = new Button { Text = "キャンセル", DialogResult = DialogResult.Cancel, AutoSize = true };
         var save = new Button { Text = "保存", AutoSize = true };
@@ -50,6 +60,7 @@ public sealed class AgentSettingsForm : Form
                 new AgentSettings { OqsRoot = oqs.Text, FaceXmlDirectory = face.Text, FaceTrashDirectory = trash.Text,
                     AutoRegisterReferenceNumber = autoRegister.Checked, ReconcileReferenceNumber = reconcile.Checked, ICallRequestDirectory = request.Text, ICallResponseDirectory = response.Text, MarkArrived = false, LinkReservation = false,
                     OpenResponseFolderOnMonitorStart = openResponse.Checked,
+                    ReceptionLinkMode = (Reception.ReceptionLinkMode)linkMode.SelectedIndex, DynamicsReceiptDirectory = receipt.Text,
                     FaceEncoding = encoding.SelectedIndex == 0 ? Face.FaceXmlEncoding.Utf8 : Face.FaceXmlEncoding.ShiftJis }.Save(MainForm.DataDirectory);
                 DialogResult = DialogResult.OK;
             }

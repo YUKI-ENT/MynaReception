@@ -14,6 +14,8 @@ public sealed class AgentSettings
     public bool ReconcileReferenceNumber { get; set; } = true;
     public bool MarkArrived { get; set; }
     public bool LinkReservation { get; set; }
+    public Reception.ReceptionLinkMode ReceptionLinkMode { get; set; } = Reception.ReceptionLinkMode.ICall;
+    public string DynamicsReceiptDirectory { get; set; } = "";
     public Face.FaceXmlEncoding FaceEncoding { get; set; } = Face.FaceXmlEncoding.Utf8;
     public static AgentSettings Load(string directory)
     {
@@ -28,6 +30,10 @@ public sealed class AgentSettings
         string faceDirectory = string.IsNullOrWhiteSpace(FaceXmlDirectory) ? "" : NormalizeRoot(FaceXmlDirectory);
         string OptionalPath(string value) => string.IsNullOrWhiteSpace(value) ? "" : NormalizeRoot(value);
         string trash = OptionalPath(FaceTrashDirectory), request = OptionalPath(ICallRequestDirectory), response = OptionalPath(ICallResponseDirectory);
+        string receipt = OptionalPath(DynamicsReceiptDirectory);
+        if (!Enum.IsDefined(ReceptionLinkMode)) throw new InvalidDataException("受付連携方式が不正です。");
+        if (ReceptionLinkMode == Reception.ReceptionLinkMode.DirectOutput && receipt.Length == 0)
+            throw new ArgumentException("直接出力にはDynamics受付出力フォルダーを指定してください。");
         if (request.Length > 0 && string.Equals(request, response, StringComparison.OrdinalIgnoreCase)) throw new ArgumentException("requestとresponseには別のフォルダーを指定してください。");
         if (!Enum.IsDefined(FaceEncoding)) throw new InvalidDataException("face XML文字コードの設定が不正です。");
         Directory.CreateDirectory(directory);
@@ -37,9 +43,11 @@ public sealed class AgentSettings
             using (var stream = new FileStream(temp, FileMode.CreateNew, FileAccess.Write, FileShare.None))
             { JsonSerializer.Serialize(stream, new AgentSettings { OqsRoot = normalized, FaceXmlDirectory = faceDirectory, FaceEncoding = FaceEncoding,
                 AutoRegisterReferenceNumber = AutoRegisterReferenceNumber, ReconcileReferenceNumber = ReconcileReferenceNumber, FaceTrashDirectory = trash, ICallRequestDirectory = request, ICallResponseDirectory = response,
-                OpenResponseFolderOnMonitorStart = OpenResponseFolderOnMonitorStart, MarkArrived = MarkArrived, LinkReservation = LinkReservation }, new JsonSerializerOptions { WriteIndented = true }); stream.Flush(true); }
+                OpenResponseFolderOnMonitorStart = OpenResponseFolderOnMonitorStart, MarkArrived = MarkArrived, LinkReservation = LinkReservation,
+                ReceptionLinkMode = ReceptionLinkMode, DynamicsReceiptDirectory = receipt }, new JsonSerializerOptions { WriteIndented = true }); stream.Flush(true); }
             File.Move(temp, path, true); OqsRoot = normalized; FaceXmlDirectory = faceDirectory;
             FaceTrashDirectory = trash; ICallRequestDirectory = request; ICallResponseDirectory = response;
+            DynamicsReceiptDirectory = receipt;
         }
         finally { if (File.Exists(temp)) File.Delete(temp); }
     }
@@ -52,6 +60,8 @@ public sealed class AgentSettings
     }
     public void ValidateMonitoring()
     {
+        if (!Enum.IsDefined(ReceptionLinkMode)) throw new InvalidDataException("受付連携方式が不正です。");
+        if (ReceptionLinkMode == Reception.ReceptionLinkMode.DirectOutput) NormalizeRoot(DynamicsReceiptDirectory);
         if (AutoRegisterReferenceNumber) new Oqs.OqsFileClient(NormalizeRoot(OqsRoot)).ValidateFolders();
         NormalizeRoot(FaceXmlDirectory); NormalizeRoot(FaceTrashDirectory);
         NormalizeRoot(ICallRequestDirectory); NormalizeRoot(ICallResponseDirectory);

@@ -30,6 +30,7 @@ public sealed class MainForm : Form
     private string? revision;
     private volatile bool monitoringAvailable;
     private readonly Kiosk.KioskSessions kioskSessions;
+    private readonly Kiosk.KioskAutomationService kioskAutomation;
     private Web.KioskWebServer? kioskServer;
     private Task? monitorTask, webStartTask, refreshTask, manualTask, explorerTask;
     private bool closing, closeReady, resourcesDisposed;
@@ -39,7 +40,9 @@ public sealed class MainForm : Form
         this.dataDirectory = dataDirectory;
         store = new(Path.Combine(dataDirectory, "Reception"));
         registration = new(Path.Combine(dataDirectory, "SingleReferenceRegistration"), TimeSpan.FromSeconds(30));
-        kioskSessions = new Kiosk.KioskSessions(Path.Combine(dataDirectory, "Kiosk"), store, () => Kiosk.KioskOptions.Load(dataDirectory), () => monitoringAvailable);
+        kioskSessions = new Kiosk.KioskSessions(Path.Combine(dataDirectory, "Kiosk"), store, () => Kiosk.KioskOptions.Load(dataDirectory), () => monitoringAvailable,
+            receptionSettings: () => AgentSettings.Load(dataDirectory));
+        kioskAutomation = new(kioskSessions, store, DynamicsFacePatientFinder.FindAsync, KioskReceiptPrinter.Print, () => monitoringAvailable);
         Text = "ReceptionAgent — 受付ステータス"; StartPosition = FormStartPosition.CenterScreen;
         Size = new Size(1280, 720); MinimumSize = new Size(960, 550);
         var layout = new TableLayoutPanel { Dock = DockStyle.Fill, Padding = new Padding(16), ColumnCount = 1, RowCount = 5 };
@@ -61,7 +64,7 @@ public sealed class MainForm : Form
             revision = null; Reload();
         };
         layout.Controls.Add(status, 0, 0); layout.Controls.Add(dateBar, 0, 1); layout.Controls.Add(grid, 0, 2);
-        layout.Controls.Add(new Label { AutoSize = true, Text = "選択日の最新500件／ダブルクリックで詳細。選択行から手動操作します。来院確認・連携の結果はボタン呼出し結果です。" }, 0, 3);
+        layout.Controls.Add(new Label { AutoSize = true, Text = "選択日の最新500件／ダブルクリックで詳細。選択行から手動操作します。連携方式は設定で選択します。ファイル出力受付はDynamics取込完了を意味しません。" }, 0, 3);
         var commands = new FlowLayoutPanel { Dock = DockStyle.Fill, AutoSize = true };
         var start = new Button { Text = "監視開始", AutoSize = true }; var stop = new Button { Text = "監視停止", Enabled = false, AutoSize = true };
         var settings = new Button { Text = "設定", AutoSize = true }; var manual = new Button { Text = "手動患者検索（テスト）", AutoSize = true };
@@ -187,8 +190,27 @@ public sealed class MainForm : Form
         {
             if (!busy)
             {
+                string? outputError = await Task.Run(() =>
+                {
+                    string? error = null;
+                    var config = AgentSettings.Load(dataDirectory);
+                    var folders = store.ReceiptOutputDirectories().ToList();
+                    if (!string.IsNullOrWhiteSpace(config.DynamicsReceiptDirectory)) folders.Add(config.DynamicsReceiptDirectory);
+                    foreach (string folder in folders.Distinct(StringComparer.OrdinalIgnoreCase))
+                    {
+                        try { new DynamicsReceiptOutput().Flush(folder); }
+                        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or InvalidDataException or System.Text.Json.JsonException)
+                        {
+                            error = "受付ファイル出力は再試行待ち: " + ex.Message;
+                            store.Log("receipt_output_retry", "", new { error = ex.GetType().Name });
+                        }
+                    }
+                    return error;
+                }, token);
                 pendingResultRefresh = Task.Run(() => registration.RefreshResultsAsync(token), token);
                 await pendingResultRefresh;
+                if (outputError is not null && !closing && !IsDisposed) status.Text = outputError;
+                await Task.Run(() => kioskAutomation.RunOnceAsync(token), token);
             }
             if (!closing && !IsDisposed) Reload();
         }
@@ -287,11 +309,13 @@ public sealed class MainForm : Form
             (record.VerifiedPatientId.Length == 0 || record.VerifiedPatientId == record.Lookup.Selected.PatientId);
         bool reservation = identified && record!.GeneratedAt.Date == DateTime.Today &&
             !string.IsNullOrWhiteSpace(record.ReceptionNo) && !string.IsNullOrWhiteSpace(record.ReservationPatientName);
-        bool CanOperate(string action) => reservation &&
+        bool CanOperate(string action) => reservation && !kioskSessions.HasPendingAutomation(record!.Id) &&
             (record!.PendingRequest?.Action == action && record.Stage is CaptureStage.ArrivedWaiting or CaptureStage.LinkWaiting ||
              record.PendingRequest is null && record.Stage == CaptureStage.Completed &&
              !record.Responses.Any(r => r.RequestId == "ra-" + record.Id + "-" + action));
-        arrived.Enabled = CanOperate("arrived"); link.Enabled = CanOperate("link");
+        arrived.Enabled = CanOperate("arrived");
+        link.Enabled = CanOperate("link") && record!.DynamicsReceiptDirectory.Length == 0 &&
+            AgentSettings.Load(dataDirectory).ReceptionLinkMode != ReceptionLinkMode.None;
         var job = record is null ? null : registration.Load(record.Id);
         register.Enabled = identified && record!.Lookup!.Candidates.Count == 1 && (job is null ? string.IsNullOrWhiteSpace(record!.Face?.ReferenceNumber) && record.Face?.Insurance is not null :
             job.State is ReferenceRegistrationState.ResultWaiting or ReferenceRegistrationState.RequestSubmitted);
@@ -319,7 +343,8 @@ public sealed class MainForm : Form
             else
             {
                 status.Text = action == "arrived" ? "来院確認を要求しています…" : "連携を要求しています…";
-                var workflow = new ReceptionWorkflow(store, DynamicsFacePatientFinder.FindAsync);
+                if (pendingResultRefresh is not null) await pendingResultRefresh;
+                var workflow = new ReceptionWorkflow(store, DynamicsFacePatientFinder.FindAsync, AgentSettings.Load(dataDirectory));
                 await workflow.QueueManualAsync(record.Id, action, CancellationToken.None);
                 await workflow.StepByIdAsync(record.Id, CancellationToken.None);
                 record = store.Get(record.Id);

@@ -47,9 +47,10 @@ public sealed class KioskWebServer(KioskSessions sessions, Func<bool> available)
             session.Title, session.Message, category = session.Category.ToString(), session.ExpiresAt,
             needsInput = session.MonthDayOnly && session.MonthDayAnswers is null && session.State == KioskSessionState.WaitingForXml,
             confirmedName = session.ConfirmedName,
+            canCancel = session.State is KioskSessionState.WaitingForXml or KioskSessionState.LookingUp,
             page = session.MonthDayOnly && session.MonthDayAnswers is null && session.State == KioskSessionState.WaitingForXml
                 ? session.Options.Flow.Page(session.FlowPageId ?? session.Options.Flow.FirstPageId) : null,
-            waiting = session.State is KioskSessionState.WaitingForXml or KioskSessionState.LookingUp };
+            waiting = session.State is KioskSessionState.WaitingForXml or KioskSessionState.LookingUp || session.Automation is { Finished: false } };
         web.MapGet("/", (HttpContext context) =>
         {
             if (!context.Request.Cookies.TryGetValue("kiosk-device", out var value) || !Guid.TryParseExact(value, "N", out _))
@@ -58,7 +59,7 @@ public sealed class KioskWebServer(KioskSessions sessions, Func<bool> available)
         });
         web.MapGet("/kiosk.js", () => Asset("kiosk.js", "text/javascript; charset=utf-8"));
         web.MapGet("/kiosk.css", () => Asset("kiosk.css", "text/css; charset=utf-8"));
-        web.MapGet("/api/health", () => Results.Ok(new { available = available(), testMode = true }));
+        web.MapGet("/api/health", () => Results.Ok(new { available = available(), testMode = !sessions.DisplayOptions().Automation.Enabled }));
         web.MapGet("/api/display", () => { var flow = sessions.DisplayOptions().Flow; return Results.Ok(new { flow.StartTitle, flow.StartMessage, flow.StartButton }); });
         web.MapGet("/api/current", (HttpContext context) => Results.Ok(new { session = sessions.Current(Device(context)) is { } current ? View(current) : null }));
         web.MapPost("/api/sessions", (HttpContext context, StartKioskRequest request) => Results.Ok(View(sessions.Start(Device(context), request.CommandId, request.Answers))));

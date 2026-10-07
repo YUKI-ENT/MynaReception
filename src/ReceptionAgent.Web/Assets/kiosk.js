@@ -46,8 +46,8 @@ function render(s) {
   if(s.needsInput && s.page) renderPage(s);
   $('title').textContent=s.title; $('message').textContent=s.message;
   $('name').textContent=s.confirmedName ? 'お名前：'+s.confirmedName+' 様（お名前をご確認ください）' : ''; $('name').hidden=!s.confirmedName;
-  $('progress').textContent=s.waiting ? '確認中です。この画面でお待ちください。' : '職員テスト用の案内です。';
-  $('cancel').hidden=!s.waiting; $('reset').hidden=s.waiting;
+  $('progress').textContent=s.waiting ? '確認中です。この画面でお待ちください。' : 'ご案内をご確認ください。';
+  $('cancel').hidden=!s.canCancel; $('reset').hidden=s.waiting;
   clearTimeout(timer); if(!s.waiting) timer=setTimeout(reset,60000);
 }
 function adopt(s) {if(sessionId!==s.id) {lastVersion=0;pageKey='';} sessionId=s.id; sessionStorage.setItem('reception-session',sessionId); render(s);}

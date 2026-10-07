@@ -46,11 +46,13 @@ public sealed class CaptureRecord
     public bool MarkArrived { get; set; }
     public bool LinkReservation { get; set; }
     public bool ManualOperationRequested { get; set; }
+    public string KioskAutomaticSessionId { get; set; } = "";
     public ICallRequest? PendingRequest { get; set; }
     public string ReceptionNo { get; set; } = "";
     public string ReservationPatientName { get; set; } = "";
     public string ArrivalResult { get; set; } = "未要求";
     public string LinkResult { get; set; } = "未要求";
+    public string DynamicsReceiptDirectory { get; set; } = "";
     public List<ICallResponse> Responses { get; set; } = [];
     public bool? ChartNumberFoundAtReception { get; set; }
     public bool? ReservationFoundAtReception { get; set; }

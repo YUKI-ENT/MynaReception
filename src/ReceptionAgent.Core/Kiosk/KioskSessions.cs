@@ -35,6 +35,7 @@ public sealed class KioskSession
     public ReceptionCategory Category { get; set; } = ReceptionCategory.Pending;
     public string Title { get; set; } = "カードを置いてください";
     public string Message { get; set; } = "顔認証カードリーダーを操作してください。";
+    public KioskAutomationJob? Automation { get; set; }
 }
 
 public sealed class KioskSessions
@@ -45,11 +46,15 @@ public sealed class KioskSessions
     private readonly Func<KioskOptions> options;
     private readonly Func<bool> available;
     private readonly Func<DateTimeOffset> clock;
-    public KioskSessions(string directory, CaptureStore captures, Func<KioskOptions> options, Func<bool> available, Func<DateTimeOffset>? clock = null)
+    private readonly Func<AgentSettings> receptionSettings;
+    private readonly string automationLockPath;
+    public KioskSessions(string directory, CaptureStore captures, Func<KioskOptions> options, Func<bool> available, Func<DateTimeOffset>? clock = null, Func<AgentSettings>? receptionSettings = null)
     {
         Directory.CreateDirectory(directory);
         connectionString = new SqliteConnectionStringBuilder { DataSource = Path.Combine(directory, "kiosk.sqlite3") }.ToString();
         this.captures = captures; this.options = options; this.available = available; this.clock = clock ?? (() => DateTimeOffset.Now);
+        this.receptionSettings = receptionSettings ?? (() => new AgentSettings());
+        automationLockPath = Path.Combine(directory, "automation.lock");
         using var connection = Open(); using var cmd = connection.CreateCommand();
         cmd.CommandText = "PRAGMA journal_mode=WAL; CREATE TABLE IF NOT EXISTS sessions(id TEXT PRIMARY KEY, device TEXT NOT NULL, command_id TEXT NOT NULL, capture_id TEXT UNIQUE, data TEXT NOT NULL, UNIQUE(device,command_id)); DROP INDEX IF EXISTS single_active_session; CREATE UNIQUE INDEX IF NOT EXISTS active_device_session ON sessions(device) WHERE json_extract(data,'$.State') IN (0,1);";
         cmd.ExecuteNonQuery();
@@ -60,6 +65,8 @@ public sealed class KioskSessions
         lock (gate)
         {
             var session = Get(id, device);
+            if (session.Automation is { Finished: false })
+                throw new InvalidOperationException("自動受付処理中です。重複発券を防ぐため、処理結果を確認してから手動印刷してください。");
             if (session.StartedAt.LocalDateTime.Date != clock().LocalDateTime.Date)
                 throw new InvalidOperationException("受付済み証は当日の受付のみ印刷できます。");
             if (session.CaptureId is not { } captureId) throw new InvalidOperationException("顔認証XMLをまだ確認できていません。");
@@ -89,6 +96,63 @@ public sealed class KioskSessions
             using var reader = cmd.ExecuteReader(); var result = new List<KioskSession>();
             while (reader.Read()) result.Add(JsonSerializer.Deserialize<KioskSession>(reader.GetString(0))!);
             return result;
+        }
+    }
+    internal IDisposable AcquireAutomationLease() => new FileStream(automationLockPath, FileMode.OpenOrCreate, FileAccess.ReadWrite, FileShare.None);
+    public bool HasPendingAutomation(string captureId)
+    {
+        lock (gate)
+        {
+            using var connection = Open(); using var command = connection.CreateCommand();
+            command.CommandText = "SELECT count(*) FROM sessions WHERE capture_id=$capture AND json_extract(data,'$.Automation.Finished')=0";
+            command.Parameters.AddWithValue("$capture", captureId);
+            return Convert.ToInt64(command.ExecuteScalar()) > 0;
+        }
+    }
+    internal IReadOnlyList<KioskSession> AutomationCandidates()
+    {
+        lock (gate)
+        {
+            foreach (var active in Active()) _ = Get(active.Id, active.Device);
+            using var connection = Open(); using var command = connection.CreateCommand();
+            command.CommandText = "SELECT data FROM sessions WHERE json_extract(data,'$.Automation.Finished')=0";
+            using var reader = command.ExecuteReader(); var result = new List<KioskSession>();
+            while (reader.Read())
+            {
+                var session = JsonSerializer.Deserialize<KioskSession>(reader.GetString(0))!;
+                if (session.Automation is { Finished: false }) result.Add(session);
+            }
+            return result;
+        }
+    }
+    internal void SaveAutomation(string id, string device, KioskAutomationJob job)
+    {
+        lock (gate)
+        {
+            var session = Read(id, device); session.Automation = job;
+            if (job.NeedsReview) ToStaff(session, "受付処理を職員が確認します。受付へお声掛けください。");
+            else if (job.Finished)
+            {
+                session.Title = "受付が完了しました";
+                session.Message = job.Print == KioskAutoActionState.Completed ? "発券された受付済み証をお取りください。" : "職員の案内をお待ちください。";
+            }
+            session.Version++; Save(session);
+        }
+    }
+    public KioskSession ConfirmAutomationReview(string id, string device)
+    {
+        lock (gate)
+        {
+            var session = Read(id, device);
+            if (session.Automation is not { NeedsReview: true } job) throw new InvalidOperationException("職員確認待ちの自動受付を選択してください。");
+            session.State = KioskSessionState.Guidance;
+            if (session.CaptureId is not { } captureId || !KioskAutomationEligibility.IsEligible(session, captures.Get(captureId), clock()))
+                throw new InvalidOperationException("患者・予約の不整合が残っています。元の受付を確認してください。");
+            KioskAutoActionState Resolve(KioskAutoActionState state) => state == KioskAutoActionState.Completed ? state : KioskAutoActionState.Skipped;
+            job.Link = Resolve(job.Link); job.Arrival = Resolve(job.Arrival); job.Print = Resolve(job.Print);
+            job.NeedsReview = false; job.Message = "職員確認済み／未完了操作は手動対応（自動再送なし）";
+            session.Title = "受付結果を職員が確認しました"; session.Message = "職員の案内をお待ちください。";
+            session.Version++; Save(session); return session;
         }
     }
     private KioskSession Read(string id, string device)
@@ -290,7 +354,7 @@ public sealed class KioskSessions
                 if (session.CaptureId is { } captureId && session.State == KioskSessionState.LookingUp)
                 {
                     var capture = captures.Get(captureId); session.Category = capture.ReceptionCategory;
-                    if (session.Category != ReceptionCategory.Pending)
+                    if (session.Category != ReceptionCategory.Pending && (capture.Stage is CaptureStage.Completed or CaptureStage.NeedsReview || session.Category == ReceptionCategory.NeedsReview))
                     {
                         bool review = session.Category == ReceptionCategory.NeedsReview || session.Answers.HasVisitedBefore && capture.ChartNumberFoundAtReception == false ||
                             !string.IsNullOrWhiteSpace(session.Answers.PatientId) && capture.Lookup?.Selected?.PatientId != session.Answers.PatientId;
@@ -318,6 +382,21 @@ public sealed class KioskSessions
                     }
                 }
             }
+            if (session.CaptureId is { } automaticCaptureId && session.Options.Automation.Enabled &&
+                KioskAutomationEligibility.IsEligible(session, captures.Get(automaticCaptureId), clock()))
+            {
+                var config = receptionSettings();
+                if (!Enum.IsDefined(config.ReceptionLinkMode)) throw new InvalidDataException("受付連携方式が不正です。");
+                var automation = session.Options.Automation;
+                session.Automation = new KioskAutomationJob
+                {
+                    Link = automation.AutoLink && config.ReceptionLinkMode != ReceptionLinkMode.None ? KioskAutoActionState.Pending : KioskAutoActionState.Skipped,
+                    Arrival = automation.AutoArrival ? KioskAutoActionState.Pending : KioskAutoActionState.Skipped,
+                    Print = automation.AutoPrint ? KioskAutoActionState.Pending : KioskAutoActionState.Skipped,
+                    LinkMode = config.ReceptionLinkMode, ReceiptDirectory = config.DynamicsReceiptDirectory, PrinterName = automation.PrinterName
+                };
+                if (!session.Automation.Finished) { session.Title = "受付を処理しています"; session.Message = "そのままお待ちください。"; }
+            }
             session.Version++; Save(session); return session;
         }
     }
@@ -328,6 +407,7 @@ public sealed class KioskSessions
         lock (gate)
         {
             var session = Read(id, device);
+            if (session.Automation is { Finished: false }) throw new InvalidOperationException("自動受付処理中です。終了せず、そのままお待ちください。問題があれば職員へお声掛けください。");
             if (session.State is KioskSessionState.Cancelled or KioskSessionState.Closed) return session;
             if (!cancel && session.State is KioskSessionState.WaitingForXml or KioskSessionState.LookingUp) throw new InvalidOperationException("照会中は終了できません。");
             session.State = cancel ? KioskSessionState.Cancelled : KioskSessionState.Closed;

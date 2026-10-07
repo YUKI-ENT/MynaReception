@@ -5,6 +5,7 @@ using ReceptionAgent.Oqs.ReferenceNumber;
 using ReceptionAgent.Dynamics;
 
 if (args.Contains("--kiosk-flow-preview")) { await KioskFlowTests.Preview(); return; }
+if (args.Contains("--kiosk-automation")) { await KioskAutomationTests.Run((pass, name) => { if (!pass) throw new Exception(name); Console.WriteLine("PASS: " + name); }); return; }
 
 int checks = 0;
 void Check(bool pass, string name) { if (!pass) throw new Exception(name); checks++; Console.WriteLine("PASS: " + name); }
@@ -90,4 +91,6 @@ await ReceptionClassificationTests.Run(Check);
 await KioskTests.Run(Check);
 await KioskFlowTests.Run(Check);
 KioskReceptionOutputTests.Run(Check);
+DynamicsReceiptOutputTests.Run(Check);
+await KioskAutomationTests.Run(Check);
 Console.WriteLine($"All {checks} checks passed (synthetic data only).");

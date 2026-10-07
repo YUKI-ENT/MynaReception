@@ -16,6 +16,7 @@ static class Program
         await RunFlowEditor();
         await RunFormBuilder();
         await RunReceiptPreview();
+        await RunAutomationSettings();
         await Run(false, false);
         await Run(true, false);
         await Run(false, true);
@@ -37,6 +38,38 @@ static class Program
                 done.SetResult();
             }
             catch (Exception ex) { done.SetException(ex); }
+        });
+        thread.SetApartmentState(ApartmentState.STA); thread.Start(); return done.Task;
+    }
+    static Task RunAutomationSettings()
+    {
+        var done = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var thread = new Thread(() =>
+        {
+            string root = Path.Combine(Path.GetTempPath(), "kiosk-auto-form-" + Guid.NewGuid().ToString("N"));
+            try
+            {
+                var type = typeof(MainForm).Assembly.GetType("ReceptionAgent.KioskAutomationSettingsForm", true)!;
+                using var form = (Form)Activator.CreateInstance(type, [root])!;
+                form.ShowInTaskbar = false; form.StartPosition = FormStartPosition.Manual; form.Location = new(-32000, -32000);
+                form.Show(); Application.DoEvents();
+                IEnumerable<Control> Descendants(Control control) => control.Controls.Cast<Control>().SelectMany(c => new[] { c }.Concat(Descendants(c)));
+                var controls = Descendants(form).ToArray();
+                var switches = controls.OfType<CheckBox>().ToArray();
+                Check(switches.Length == 3 && switches.All(c => !c.Checked), "automatic settings UI exposes three independent OFF switches");
+                var printer = controls.OfType<ComboBox>().Single();
+                Check(!printer.Enabled, "printer selection disabled when auto-print OFF");
+                switches.Single(c => c.Text.Contains("自動発券")).Checked = true; Application.DoEvents();
+                Check(printer.Enabled, "58mm auto-print enables printer selection");
+                switches.Single(c => c.Text.Contains("自動発券")).Checked = false;
+                switches.Single(c => c.Text.Contains("連携を自動")).Checked = true;
+                controls.OfType<Button>().Single(c => c.Text == "保存").PerformClick(); Application.DoEvents();
+                Check(KioskOptions.Load(root).Automation.AutoLink && !KioskOptions.Load(root).Automation.AutoPrint,
+                    "automation form saves switches without sending to a printer");
+                done.SetResult();
+            }
+            catch (Exception ex) { done.SetException(ex); }
+            finally { if (Directory.Exists(root)) Directory.Delete(root, true); }
         });
         thread.SetApartmentState(ApartmentState.STA); thread.Start(); return done.Task;
     }
