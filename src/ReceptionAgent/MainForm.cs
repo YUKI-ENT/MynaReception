@@ -3,7 +3,7 @@ using ReceptionAgent.Oqs.ReferenceNumber;
 
 namespace ReceptionAgent;
 
-public sealed class MainForm : Form
+public sealed class MainForm : ReceptionAgentForm
 {
     internal static string DataDirectory => Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "ReceptionAgent");
     private readonly CaptureStore store;
@@ -22,6 +22,7 @@ public sealed class MainForm : Form
     private readonly Button arrived = new() { Text = "来院確認", AutoSize = true, Enabled = false };
     private readonly Button link = new() { Text = "連携", AutoSize = true, Enabled = false };
     private readonly Button register = new() { Text = "照会番号登録／結果再確認", AutoSize = true, Enabled = false };
+    private readonly Button posPrint = new() { Text = "POS発券（2枚）…", AutoSize = true, Enabled = false };
     private readonly CancellationTokenSource resultCancellation = new();
     private Task? pendingResultRefresh;
     private bool refreshingResults;
@@ -29,6 +30,7 @@ public sealed class MainForm : Form
     private IReadOnlyList<CaptureRecord> records = [];
     private string? revision;
     private volatile bool monitoringAvailable;
+    private bool MonitoringReady => monitoringAvailable && monitor?.FoldersAccessible == true;
     private readonly Kiosk.KioskSessions kioskSessions;
     private readonly Kiosk.KioskAutomationService kioskAutomation;
     private Web.KioskWebServer? kioskServer;
@@ -40,9 +42,10 @@ public sealed class MainForm : Form
         this.dataDirectory = dataDirectory;
         store = new(Path.Combine(dataDirectory, "Reception"));
         registration = new(Path.Combine(dataDirectory, "SingleReferenceRegistration"), TimeSpan.FromSeconds(30));
-        kioskSessions = new Kiosk.KioskSessions(Path.Combine(dataDirectory, "Kiosk"), store, () => Kiosk.KioskOptions.Load(dataDirectory), () => monitoringAvailable,
+        kioskSessions = new Kiosk.KioskSessions(Path.Combine(dataDirectory, "Kiosk"), store, () => Kiosk.KioskOptions.Load(dataDirectory), () => MonitoringReady,
             receptionSettings: () => AgentSettings.Load(dataDirectory));
-        kioskAutomation = new(kioskSessions, store, DynamicsFacePatientFinder.FindAsync, KioskReceiptPrinter.Print, () => monitoringAvailable);
+        kioskAutomation = new(kioskSessions, store, DynamicsFacePatientFinder.FindAsync,
+            (receipt, printer) => KioskReceiptPrinter.Print(receipt, printer, AgentSettings.Load(dataDirectory).PosPrint), () => MonitoringReady);
         Text = "ReceptionAgent — 受付ステータス"; StartPosition = FormStartPosition.CenterScreen;
         Size = new Size(1280, 720); MinimumSize = new Size(960, 550);
         var layout = new TableLayoutPanel { Dock = DockStyle.Fill, Padding = new Padding(16), ColumnCount = 1, RowCount = 5 };
@@ -88,15 +91,35 @@ public sealed class MainForm : Form
             finally { monitoringAvailable = false; cancellation?.Dispose(); cancellation = null; monitor = null; if (!closing) { start.Enabled = settings.Enabled = true; stop.Enabled = false; Reload(); } }
         };
         stop.Click += (_, _) => { monitoringAvailable = false; cancellation?.Cancel(); stop.Enabled = false; status.Text = "停止しています…"; };
-        settings.Click += (_, _) => { try { using var dialog = new AgentSettingsForm(); dialog.ShowDialog(this); } catch (Exception ex) { MessageBox.Show(this, ex.Message); } };
+        settings.Click += (_, _) => { try { using var dialog = new AgentSettingsForm(dataDirectory); dialog.ShowDialog(this); revision = null; Reload(); } catch (Exception ex) { MessageBox.Show(this, ex.Message); } };
         manual.Click += (_, _) => { using var dialog = new ManualLookupForm(); dialog.ShowDialog(this); };
         arrived.Click += async (_, _) => await (manualTask = RunSelectedAsync("arrived"));
         link.Click += async (_, _) => await (manualTask = RunSelectedAsync("link"));
         register.Click += async (_, _) => await (manualTask = RunSelectedAsync("register"));
+        posPrint.Click += (_, _) =>
+        {
+            try
+            {
+                if (SelectedRecord() is not { Conflict: false, ReconciliationIdentityMismatch: false, Lookup.Selected: not null } record) return;
+                var options = AgentSettings.Load(dataDirectory).PosPrint;
+                if (!options.Enabled) return;
+                var patient = record.Lookup.Selected;
+                if (record.VerifiedPatientId.Length > 0 && record.VerifiedPatientId != patient.PatientId)
+                    throw new InvalidOperationException("カルテ番号が一致しません。詳細を確認してください。");
+                if (string.IsNullOrWhiteSpace(record.ReceptionNo)) throw new InvalidOperationException("予約番号を確認してから発券してください。");
+                string name = !string.IsNullOrWhiteSpace(patient.Name) ? patient.Name :
+                    !string.IsNullOrWhiteSpace(record.ReservationPatientName) ? record.ReservationPatientName : record.XmlPatientName;
+                var receipt = new Kiosk.KioskReceipt(record.Id, patient.PatientId, name, patient.NameKana ?? "", record.ReceptionNo, record.CapturedAt).WithXmlIdentity(record);
+                if (string.IsNullOrWhiteSpace(receipt.Name)) throw new InvalidOperationException("氏名を確認してから発券してください。");
+                using var dialog = new KioskReceiptForm(receipt, false, options);
+                dialog.ShowDialog(this);
+            }
+            catch (Exception ex) { MessageBox.Show(this, ex.Message, "発券できません"); }
+        };
         grid.SelectionChanged += (_, _) => UpdateActions();
         var kiosk = new Button { Text = "Kioskコンソール", AutoSize = true };
         kiosk.Click += (_, _) => { try { using var dialog = new KioskConsoleForm(kioskSessions, () => kioskServer?.Url ?? ""); dialog.ShowDialog(this); } catch (Exception ex) { MessageBox.Show(this, ex.Message); } };
-        commands.Controls.AddRange([arrived, link, register, start, stop, settings, manual, kiosk]);
+        commands.Controls.AddRange([arrived, link, register, posPrint, start, stop, settings, manual, kiosk]);
         layout.Controls.Add(commands, 0, 4); Controls.Add(layout);
         grid.CellDoubleClick += (_, e) =>
         {
@@ -104,15 +127,20 @@ public sealed class MainForm : Form
             var r = records.FirstOrDefault(r => r.Id == grid.Rows[e.RowIndex].Cells["ID"].Value as string);
             if (r is null) return;
             string timing = $"\r\nXML初回発見: {r.FirstSeenAt:yyyy/MM/dd HH:mm:ss.fff}\r\nXML取得完了: {r.CapturedAt:yyyy/MM/dd HH:mm:ss.fff}\r\nカルテ検索: {r.PatientLookupMilliseconds:F0} ms\r\niCall照会開始: {r.ICallStartedAt:HH:mm:ss.fff}\r\niCall応答取得: {r.ICallReceivedAt:HH:mm:ss.fff}\r\niCall応答待ちタイムアウト回数: {r.ICallTimeoutCount}\r\n処理ログ: {Path.Combine(DataDirectory, "Reception", "Logs")}\r\n取込ID: {r.Id}\r\n";
-            string detail = $"{r.FileName}\r\n取得元: {r.SourcePath}\r\n状態: {r.Status}\r\n患者照合: {r.Lookup?.Message}\r\n再検証: {r.ReconciliationStatus}\r\n再検証カルテ番号: {r.VerifiedPatientId}\r\n次回: {r.ReconciliationNextAt}\r\n来院確認: {r.ArrivalResult}\r\n連携: {r.LinkResult}\r\n要求ID: {r.PendingRequest?.RequestId}\r\n";
+            string detail = $"{r.FileName}\r\nファイル作成日時: {r.FileCreatedAt?.ToLocalTime():yyyy/MM/dd HH:mm:ss}\r\nXML生成日時: {r.GeneratedAt:yyyy/MM/dd HH:mm:ss}\r\n取得日時: {r.CapturedAt:yyyy/MM/dd HH:mm:ss}\r\n取得元: {r.SourcePath}\r\n状態: {r.Status}\r\n患者照合: {r.Lookup?.Message}\r\n再検証: {r.ReconciliationStatus}\r\n再検証カルテ番号: {r.VerifiedPatientId}\r\n次回: {r.ReconciliationNextAt}\r\n来院確認: {r.ArrivalResult}\r\n連携: {r.LinkResult}\r\n要求ID: {r.PendingRequest?.RequestId}\r\n";
             if (r.Face?.Insurance is { } insurance) detail += $"保険者番号: {insurance.InsurerNumber}\r\n記号: {insurance.Symbol}\r\n番号: {insurance.Number}\r\n枝番: {insurance.Branch}\r\n";
             if (r.Lookup is not null) detail += string.Join("\r\n", r.Lookup.Candidates.Select(c => $"候補: {c.PatientId} / {c.Name} / {string.Join(",", c.RawChartNumbers)}"));
             var job = registration.Load(r.Id);
             if (job is not null) detail += $"\r\n照会番号登録: {job.State} / {job.Message}\r\n登録番号: {job.Target.ReferenceNumber}\r\n訂正前: {job.PreviousReferenceNumber} / 訂正回数: {job.CorrectionCount}\r\n要求: {job.RequestFileName}\r\n応答: {job.ResponseFileName}\r\n結果: {job.SegmentOfResult} / {job.ErrorCode} / {job.ErrorMessage} / {job.ProcessingResultStatus} / {job.ProcessingResultCode} / {job.ProcessingResultMessage}";
             MessageBox.Show(this, detail + timing, "取込結果");
         };
-        refresh.Tick += async (_, _) => await (refreshTask = RefreshAsync());
+        refresh.Tick += async (_, _) => { Reload(); await (refreshTask = RefreshAsync()); };
         Shown += (_, _) => { Reload(); refresh.Start(); };
+        Shown += (_, _) =>
+        {
+            try { if (AgentSettings.Load(dataDirectory).StartMonitoringOnLaunch) start.PerformClick(); }
+            catch (Exception ex) { status.Text = "起動時の監視設定を読み取れません: " + ex.Message; }
+        };
         Shown += async (_, _) => await (webStartTask = StartWebServerAsync());
         FormClosing += async (_, e) =>
         {
@@ -129,7 +157,7 @@ public sealed class MainForm : Form
     }
     private async Task StartWebServerAsync()
     {
-        var server = new Web.KioskWebServer(kioskSessions, () => monitoringAvailable);
+        var server = new Web.KioskWebServer(kioskSessions, () => MonitoringReady);
         try
         {
             var options = Kiosk.KioskOptions.Load(dataDirectory); options.Validate(); await server.StartAsync(options.Port);
@@ -170,6 +198,12 @@ public sealed class MainForm : Form
     {
         try
         {
+            while (!await Task.Run(() =>
+            {
+                try { using var entries = Directory.EnumerateFileSystemEntries(folder).GetEnumerator(); entries.MoveNext(); return true; }
+                catch (Exception ex) when (ex is IOException or UnauthorizedAccessException) { return false; }
+            }, token)) await Task.Delay(TimeSpan.FromSeconds(5), token);
+            token.ThrowIfCancellationRequested();
             bool minimized = await ResponseFolderExplorer.OpenMinimizedAsync(folder, token);
             store.Log("response_explorer_opened", "", new { minimized });
             if (!minimized && !closing && !IsDisposed) status.Text = "エクスプローラーの最小化を確認できませんでした。監視は継続しています。";
@@ -178,7 +212,7 @@ public sealed class MainForm : Form
         catch (Exception ex)
         {
             store.Log("response_explorer_failed", "", new { error = ex.GetType().Name });
-            if (!closing && !IsDisposed) MessageBox.Show(this, "responseフォルダーをエクスプローラーで開けませんでした。監視は継続します。\r\n" + ex.Message, "フォルダーを開けません");
+            if (!closing && !IsDisposed) status.Text = "responseフォルダーを開けませんでした。監視は継続します: " + ex.Message;
         }
     }
     private async Task RefreshAsync()
@@ -262,7 +296,7 @@ public sealed class MainForm : Form
             状態 = r.Conflict ? "同名XMLの内容競合・停止" : r.Status, ファイル名 = r.FileName, ファイル作成日時 = r.FileCreatedAt?.ToLocalTime().ToString("yyyy/MM/dd HH:mm:ss"),
             再検証カルテ番号 = r.VerifiedPatientId, 再検証 = r.ReconciliationStatus,
             XML生成日時 = r.GeneratedAt.ToString("yyyy/MM/dd HH:mm:ss"), 取得日時 = r.CapturedAt.ToString("yyyy/MM/dd HH:mm:ss") }).ToList();
-        foreach (string column in new[] { "ID", "内部カルテ番号", "保険者番号", "記号", "番号", "枝番" })
+        foreach (string column in new[] { "ID", "内部カルテ番号", "保険者番号", "記号", "番号", "枝番", "ファイル名", "ファイル作成日時", "XML生成日時", "取得日時", "再検証カルテ番号", "再検証" })
             if (grid.Columns[column] is { } hidden) hidden.Visible = false;
         if (grid.Columns["患者ID"] is { } patientColumn) patientColumn.HeaderText = "カルテ番号";
         string[] columnOrder = ["患者ID", "予約番号", "氏名", "フリガナ", "生年月日", "受付分類", "取得時間", "来院確認", "連携", "照会番号", "照会番号登録", "状態", "ファイル名", "ファイル作成日時", "XML生成日時", "取得日時", "再検証カルテ番号", "再検証"];
@@ -309,6 +343,8 @@ public sealed class MainForm : Form
             (record.VerifiedPatientId.Length == 0 || record.VerifiedPatientId == record.Lookup.Selected.PatientId);
         bool reservation = identified && record!.GeneratedAt.Date == DateTime.Today &&
             !string.IsNullOrWhiteSpace(record.ReceptionNo) && !string.IsNullOrWhiteSpace(record.ReservationPatientName);
+        posPrint.Enabled = identified && !string.IsNullOrWhiteSpace(record!.ReceptionNo) &&
+            record.Stage != CaptureStage.NeedsReview && !kioskSessions.HasPendingAutomation(record.Id) && AgentSettings.Load(dataDirectory).PosPrint.Enabled;
         bool CanOperate(string action) => reservation && !kioskSessions.HasPendingAutomation(record!.Id) &&
             (record!.PendingRequest?.Action == action && record.Stage is CaptureStage.ArrivedWaiting or CaptureStage.LinkWaiting ||
              record.PendingRequest is null && record.Stage == CaptureStage.Completed &&

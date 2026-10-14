@@ -4,7 +4,7 @@ using ReceptionAgent.Oqs.ReferenceNumber;
 
 namespace ReceptionAgent;
 
-public sealed class BulkRegistrationForm : Form
+public sealed class BulkRegistrationForm : ReceptionAgentForm
 {
     private readonly RegistrationJobStore store = new(Path.Combine(MainForm.DataDirectory, "ReferenceRegistration", "Jobs"));
     private readonly IDynamicsProvider? provider;
@@ -76,7 +76,7 @@ public sealed class BulkRegistrationForm : Form
             try
             {
                 string report = await DynamicsPatientProvider.DiagnoseAsync();
-                using var dialog = new Form { Text = "Dynamics COM診断（項目定義）", Size = new Size(850, 680), StartPosition = FormStartPosition.CenterParent };
+                using var dialog = new ReceptionAgentForm { Text = "Dynamics COM診断（項目定義）", Size = new Size(850, 680), StartPosition = FormStartPosition.CenterParent };
                 dialog.Controls.Add(new TextBox { Text = report, Multiline = true, ReadOnly = true, ScrollBars = ScrollBars.Both, WordWrap = false, Dock = DockStyle.Fill });
                 dialog.ShowDialog(this);
                 status.Text = "COM接続を確認しました。保険証枝番は患者保険マスター.枝番、照会番号はカルテ番号÷10です。";

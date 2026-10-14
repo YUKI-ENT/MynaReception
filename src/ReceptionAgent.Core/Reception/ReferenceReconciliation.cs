@@ -6,7 +6,7 @@ namespace ReceptionAgent.Reception;
 /// <summary>Persisted, low-frequency verification independent of reservation/arrival operations.</summary>
 public sealed class ReferenceReconciliation(CaptureStore store, SingleReferenceRegistrationService registration,
     Func<FaceIdentity, CancellationToken, Task<FaceLookupResult>> verify, bool allowRegistration,
-    Func<DateTimeOffset>? clock = null, bool useQualificationResults = false)
+    Func<DateTimeOffset>? clock = null, bool useQualificationResults = false, Func<bool>? canProceed = null)
 {
     private DateTimeOffset Now => clock?.Invoke() ?? DateTimeOffset.Now;
     public static bool CanVerify(CaptureRecord record) => !record.Conflict && record.Face is not null &&
@@ -24,6 +24,7 @@ public sealed class ReferenceReconciliation(CaptureStore store, SingleReferenceR
     }
     public async Task<bool> ProcessNextAsync(CancellationToken token)
     {
+        if (canProceed?.Invoke() == false) return false;
         var now = Now;
         CaptureRecord? record;
         await store.WorkflowGate.WaitAsync(token);

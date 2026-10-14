@@ -13,6 +13,10 @@ public sealed class FaceCaptureMonitor(CaptureStore store, AgentSettings setting
     private readonly ConcurrentDictionary<string, (long, DateTime)> seen = new(StringComparer.OrdinalIgnoreCase);
     private readonly ConcurrentDictionary<string, DateTimeOffset> firstSeen = new(StringComparer.OrdinalIgnoreCase);
     public string CaptureStatus { get; private set; } = "監視開始";
+    private volatile bool foldersAccessible;
+    public bool FoldersAccessible => foldersAccessible;
+    private string? unavailableFolder;
+    private static readonly TimeSpan FolderRetryDelay = TimeSpan.FromSeconds(5);
     public async Task RunAsync(CancellationToken token)
     {
         settings.ValidateMonitoring();
@@ -24,9 +28,10 @@ public sealed class FaceCaptureMonitor(CaptureStore store, AgentSettings setting
             throw new InvalidOperationException("自動照会番号登録サービスが未接続です。");
         var tasks = new List<Task> { Guard(ScanLoop), Guard(ProcessLoop) };
         if (settings.AutoRegisterReferenceNumber)
-            tasks.Add(Guard(new AutomaticReferenceRegistration(store, registration!).RunAsync));
+            tasks.Add(Guard(new AutomaticReferenceRegistration(store, registration!, () => FoldersAccessible).RunAsync));
         if (settings.ReconcileReferenceNumber && verify is not null && registration is not null)
-            tasks.Add(Guard(new ReferenceReconciliation(store, registration, verify, settings.AutoRegisterReferenceNumber, useQualificationResults: true).RunAsync));
+            tasks.Add(Guard(new ReferenceReconciliation(store, registration, verify, settings.AutoRegisterReferenceNumber, useQualificationResults: true,
+                canProceed: () => FoldersAccessible).RunAsync));
         await Task.WhenAll(tasks);
     }
     public static bool TryTimestamp(string name, out DateTime timestamp)
@@ -39,6 +44,7 @@ public sealed class FaceCaptureMonitor(CaptureStore store, AgentSettings setting
         while (true)
         {
             token.ThrowIfCancellationRequested(); var errors = new List<string>();
+            if (!CheckFolders(token)) { await Task.Delay(FolderRetryDelay, token); continue; }
             foreach (string folder in new[] { settings.FaceXmlDirectory, settings.FaceTrashDirectory }.Distinct(StringComparer.OrdinalIgnoreCase))
             {
                 try
@@ -61,10 +67,46 @@ public sealed class FaceCaptureMonitor(CaptureStore store, AgentSettings setting
                         { lock (errors) errors.Add("XML読取待ち: " + Path.GetFileName(path) + "（" + ex.Message + "）"); }
                     });
                 }
-                catch (Exception ex) when (ex is IOException or UnauthorizedAccessException) { errors.Add("監視フォルダー確認: " + folder + "（" + ex.Message + "）"); }
+                catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+                { FolderUnavailable(folder, ex); errors.Add(CaptureStatus); }
             }
             CaptureStatus = errors.Count == 0 ? "監視中（当日分・出力先＋trash）" : errors[0];
-            await Task.Delay(1000, token);
+            await Task.Delay(FoldersAccessible ? TimeSpan.FromSeconds(1) : FolderRetryDelay, token);
+        }
+    }
+    private bool CheckFolders(CancellationToken token)
+    {
+        IEnumerable<string> folders = [settings.FaceXmlDirectory, settings.FaceTrashDirectory, settings.ICallRequestDirectory, settings.ICallResponseDirectory];
+        if (settings.AutoRegisterReferenceNumber)
+            folders = folders.Concat([Path.Combine(settings.OqsRoot, "req"), Path.Combine(settings.OqsRoot, "res")]);
+        foreach (string folder in folders.Distinct(StringComparer.OrdinalIgnoreCase))
+        {
+            token.ThrowIfCancellationRequested();
+            try
+            {
+                // Probe read access without creating folders or loading all directory entries.
+                using var entries = Directory.EnumerateFileSystemEntries(folder).GetEnumerator();
+                entries.MoveNext();
+            }
+            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+            { FolderUnavailable(folder, ex); return false; }
+        }
+        if (unavailableFolder is not null)
+        {
+            store.Log("monitor_folders_recovered", "", new { });
+            unavailableFolder = null;
+        }
+        foldersAccessible = true;
+        return true;
+    }
+    private void FolderUnavailable(string folder, Exception error)
+    {
+        foldersAccessible = false;
+        CaptureStatus = "フォルダーアクセス待ち（5秒ごとに自動再試行）: " + folder;
+        if (unavailableFolder != folder)
+        {
+            store.Log("monitor_folder_unavailable", "", new { folder, error = error.GetType().Name, retrySeconds = 5 });
+            unavailableFolder = folder;
         }
     }
     public async Task<bool> CaptureAsync(string path, DateTime generatedAt, CancellationToken token)
@@ -118,9 +160,11 @@ public sealed class FaceCaptureMonitor(CaptureStore store, AgentSettings setting
         while (true)
         {
             token.ThrowIfCancellationRequested();
+            if (!FoldersAccessible) { await Task.Delay(1000, token); continue; }
             foreach (var record in store.List(true).Where(r => r.RetryAfter <= DateTimeOffset.Now))
             {
                 token.ThrowIfCancellationRequested();
+                if (!FoldersAccessible) break;
                 try { await workflow.StepByIdAsync(record.Id, token); }
                 catch (InvalidDataException) { /* Concurrent capture detected conflicting file content; keep it halted. */ }
             }

@@ -2,7 +2,7 @@ using ReceptionAgent.Face;
 
 namespace ReceptionAgent;
 
-public sealed class ManualLookupForm : Form
+public sealed class ManualLookupForm : ReceptionAgentForm
 {
     internal static string DataDirectory => Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "ReceptionAgent");
     private CancellationTokenSource? searchCancellation;

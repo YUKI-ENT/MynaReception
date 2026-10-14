@@ -10,6 +10,8 @@ public sealed class AgentSettings
     public string ICallRequestDirectory { get; set; } = "";
     public string ICallResponseDirectory { get; set; } = "";
     public bool OpenResponseFolderOnMonitorStart { get; set; }
+    public bool StartMonitoringOnLaunch { get; set; }
+    public PosPrintOptions PosPrint { get; set; } = new();
     public bool AutoRegisterReferenceNumber { get; set; }
     public bool ReconcileReferenceNumber { get; set; } = true;
     public bool MarkArrived { get; set; }
@@ -25,6 +27,7 @@ public sealed class AgentSettings
     }
     public void Save(string directory)
     {
+        PosPrint.Validate();
         string normalized = string.IsNullOrWhiteSpace(OqsRoot) ? "" : NormalizeRoot(OqsRoot);
         if (AutoRegisterReferenceNumber && normalized.Length == 0) throw new ArgumentException("自動照会番号登録にはOQS連携フォルダーを指定してください。");
         string faceDirectory = string.IsNullOrWhiteSpace(FaceXmlDirectory) ? "" : NormalizeRoot(FaceXmlDirectory);
@@ -44,6 +47,7 @@ public sealed class AgentSettings
             { JsonSerializer.Serialize(stream, new AgentSettings { OqsRoot = normalized, FaceXmlDirectory = faceDirectory, FaceEncoding = FaceEncoding,
                 AutoRegisterReferenceNumber = AutoRegisterReferenceNumber, ReconcileReferenceNumber = ReconcileReferenceNumber, FaceTrashDirectory = trash, ICallRequestDirectory = request, ICallResponseDirectory = response,
                 OpenResponseFolderOnMonitorStart = OpenResponseFolderOnMonitorStart, MarkArrived = MarkArrived, LinkReservation = LinkReservation,
+                StartMonitoringOnLaunch = StartMonitoringOnLaunch, PosPrint = PosPrint,
                 ReceptionLinkMode = ReceptionLinkMode, DynamicsReceiptDirectory = receipt }, new JsonSerializerOptions { WriteIndented = true }); stream.Flush(true); }
             File.Move(temp, path, true); OqsRoot = normalized; FaceXmlDirectory = faceDirectory;
             FaceTrashDirectory = trash; ICallRequestDirectory = request; ICallResponseDirectory = response;
@@ -62,7 +66,8 @@ public sealed class AgentSettings
     {
         if (!Enum.IsDefined(ReceptionLinkMode)) throw new InvalidDataException("受付連携方式が不正です。");
         if (ReceptionLinkMode == Reception.ReceptionLinkMode.DirectOutput) NormalizeRoot(DynamicsReceiptDirectory);
-        if (AutoRegisterReferenceNumber) new Oqs.OqsFileClient(NormalizeRoot(OqsRoot)).ValidateFolders();
+        // Validate configuration here; remote availability is retried by the monitor in the background.
+        if (AutoRegisterReferenceNumber) NormalizeRoot(OqsRoot);
         NormalizeRoot(FaceXmlDirectory); NormalizeRoot(FaceTrashDirectory);
         NormalizeRoot(ICallRequestDirectory); NormalizeRoot(ICallResponseDirectory);
         if (string.Equals(NormalizeRoot(ICallRequestDirectory), NormalizeRoot(ICallResponseDirectory), StringComparison.OrdinalIgnoreCase))

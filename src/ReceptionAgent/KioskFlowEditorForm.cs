@@ -4,7 +4,7 @@ using ReceptionAgent.Kiosk;
 
 namespace ReceptionAgent;
 
-internal sealed class KioskFlowAdvancedEditorForm : Form
+internal sealed class KioskFlowAdvancedEditorForm : ReceptionAgentForm
 {
     public KioskFlow Flow { get; private set; }
     public KioskFlowAdvancedEditorForm(KioskFlow source)
@@ -94,7 +94,7 @@ internal sealed class KioskFlowAdvancedEditorForm : Form
     }
 }
 
-internal sealed class KioskFlowPreviewForm : Form
+internal sealed class KioskFlowPreviewForm : ReceptionAgentForm
 {
     public KioskFlowPreviewForm(KioskFlow flow)
     {

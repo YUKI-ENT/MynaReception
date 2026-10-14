@@ -5,8 +5,10 @@
     <UseWindowsForms>true</UseWindowsForms>
     <ImplicitUsings>enable</ImplicitUsings>
     <Nullable>enable</Nullable>
+    <ApplicationIcon>ReceptionAgent.ico</ApplicationIcon>
   </PropertyGroup>
   <ItemGroup>
+    <EmbeddedResource Include="ReceptionAgent.ico" LogicalName="ReceptionAgent.AppIcon.ico" />
     <ProjectReference Include="..\ReceptionAgent.Core\ReceptionAgent.Core.csproj" />
     <ProjectReference Include="..\ReceptionAgent.Web\ReceptionAgent.Web.csproj" />
   </ItemGroup>

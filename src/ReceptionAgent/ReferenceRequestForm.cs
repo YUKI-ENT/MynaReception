@@ -3,7 +3,7 @@ using ReceptionAgent.Oqs.ReferenceNumber;
 
 namespace ReceptionAgent;
 
-public sealed class ReferenceRequestForm : Form
+public sealed class ReferenceRequestForm : ReceptionAgentForm
 {
     private readonly Dictionary<string, TextBox> inputs = [];
     private readonly TextBox preview = new() { Dock = DockStyle.Fill, Multiline = true, ReadOnly = true,

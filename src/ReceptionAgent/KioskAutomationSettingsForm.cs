@@ -4,7 +4,7 @@ using ReceptionAgent.Kiosk;
 
 namespace ReceptionAgent;
 
-internal sealed class KioskAutomationSettingsForm : Form
+internal sealed class KioskAutomationSettingsForm : ReceptionAgentForm
 {
     private sealed class AnswerCondition
     {
@@ -23,13 +23,18 @@ internal sealed class KioskAutomationSettingsForm : Form
             Text = "対象はKioskで本人・カルテ番号・予約を確認した当日の再診・予約ありです。発熱なし・予約ありの回答が一致し、フローが受付完了案内（Finish）へ進む場合に実行します。\r\n処理順は連携→来院確認→発券。有効な処理だけ実行し、途中で失敗した場合は職員確認へ回します。" });
         var autoLink = new CheckBox { Text = "連携を自動実行（ReceptionAgent設定の連携方式を使用）", Checked = current.AutoLink, AutoSize = true };
         var autoArrival = new CheckBox { Text = "iCallへ来院確認を自動要求", Checked = current.AutoArrival, AutoSize = true };
-        var autoPrint = new CheckBox { Text = "58mm受付済み証を自動発券（患者用・医院控えを各1枚）", Checked = current.AutoPrint, AutoSize = true };
+        var autoPrint = new CheckBox { Text = "受付票を自動発券（患者用・スタッフ用を各1枚／80mm・58mm）", Checked = current.AutoPrint, AutoSize = true };
         layout.Controls.AddRange([autoLink, autoArrival, autoPrint]);
-        layout.Controls.Add(new Label { Text = "自動発券プリンタ（MUNBYN ITPP047など、Windowsに登録した58mmプリンタ）", AutoSize = true });
+        layout.Controls.Add(new Label { Text = "自動発券プリンタ（POS-80Cなど）。用紙幅・文面はReceptionAgentのPOSプリンタ設定を使用。", AutoSize = true });
         var printer = new ComboBox { Width = 700, DropDownStyle = ComboBoxStyle.DropDownList, AccessibleName = "自動発券プリンタ", Enabled = current.AutoPrint };
         printer.Items.AddRange(PrinterSettings.InstalledPrinters.Cast<string>().ToArray());
         if (current.PrinterName.Length > 0 && !printer.Items.Contains(current.PrinterName)) printer.Items.Add(current.PrinterName);
         if (current.PrinterName.Length > 0) printer.SelectedItem = current.PrinterName;
+        else
+        {
+            var pos = AgentSettings.Load(dataDirectory).PosPrint;
+            if (printer.Items.Contains(pos.PrinterName)) printer.SelectedItem = pos.PrinterName;
+        }
         autoPrint.CheckedChanged += (_, _) => printer.Enabled = autoPrint.Checked;
         layout.Controls.Add(printer);
         layout.Controls.Add(new Label { AutoSize = true, MaximumSize = new(720, 0), Text = "追加条件（すべて一致した受付のみ自動化）。空欄なら上記の基本条件だけで判定します。例: 外来区分＝一般診療。" });

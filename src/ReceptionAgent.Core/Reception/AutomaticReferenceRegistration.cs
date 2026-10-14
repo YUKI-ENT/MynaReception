@@ -3,7 +3,7 @@ using ReceptionAgent.Oqs.ReferenceNumber;
 
 namespace ReceptionAgent.Reception;
 
-public sealed class AutomaticReferenceRegistration(CaptureStore store, SingleReferenceRegistrationService registration)
+public sealed class AutomaticReferenceRegistration(CaptureStore store, SingleReferenceRegistrationService registration, Func<bool>? canProceed = null)
 {
     public static bool IsEligible(CaptureRecord record) =>
         record.AutoRegisterReferenceNumber && record.PatientIdentifiedByDynamics && !record.AutomaticRegistrationAttempted &&
@@ -21,6 +21,7 @@ public sealed class AutomaticReferenceRegistration(CaptureStore store, SingleRef
     }
     public async Task<bool> ProcessNextAsync(CancellationToken token)
     {
+        if (canProceed?.Invoke() == false) return false;
         CaptureRecord? selected;
         await store.WorkflowGate.WaitAsync(token);
         try

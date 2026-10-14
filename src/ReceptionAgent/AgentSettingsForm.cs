@@ -1,21 +1,23 @@
 namespace ReceptionAgent;
 
-public sealed class AgentSettingsForm : Form
+public sealed class AgentSettingsForm : ReceptionAgentForm
 {
-    public AgentSettingsForm()
+    public AgentSettingsForm() : this(MainForm.DataDirectory) { }
+    public AgentSettingsForm(string dataDirectory)
     {
         Text = "ReceptionAgent 設定"; StartPosition = FormStartPosition.CenterParent;
-        ClientSize = new Size(800, 580); FormBorderStyle = FormBorderStyle.FixedDialog; MaximizeBox = false; MinimizeBox = false;
-        var current = AgentSettings.Load(MainForm.DataDirectory);
+        ClientSize = new Size(850, 680); MinimumSize = new Size(720, 580); MaximizeBox = false; MinimizeBox = false;
+        var current = AgentSettings.Load(dataDirectory);
         if (!Enum.IsDefined(current.FaceEncoding)) throw new InvalidDataException("face XMLの文字コード設定が不正です。");
         var layout = new TableLayoutPanel { Dock = DockStyle.Fill, Padding = new Padding(16), ColumnCount = 1, AutoScroll = true };
+        layout.ColumnStyles.Add(new(SizeType.Percent, 100));
         TextBox Folder(string label, string value)
         {
             layout.Controls.Add(new Label { Text = label, AutoSize = true });
-            var line = new TableLayoutPanel { Dock = DockStyle.Top, AutoSize = true, ColumnCount = 2 };
-            line.ColumnStyles.Add(new(SizeType.Percent, 100)); line.ColumnStyles.Add(new(SizeType.AutoSize));
+            var line = new TableLayoutPanel { Dock = DockStyle.Fill, AutoSize = true, ColumnCount = 2, MinimumSize = new Size(0, 34) };
+            line.ColumnStyles.Add(new(SizeType.Percent, 100)); line.ColumnStyles.Add(new(SizeType.Absolute, 90));
             var path = new TextBox { Dock = DockStyle.Fill, Text = value, AccessibleName = label };
-            var browse = new Button { Text = "参照…", AutoSize = true };
+            var browse = new Button { Text = "参照…", Dock = DockStyle.Fill };
             browse.Click += (_, _) => { using var dialog = new FolderBrowserDialog(); if (dialog.ShowDialog(this) == DialogResult.OK) path.Text = dialog.SelectedPath; };
             line.Controls.Add(path, 0, 0); line.Controls.Add(browse, 1, 0); layout.Controls.Add(line); return path;
         }
@@ -26,6 +28,11 @@ public sealed class AgentSettingsForm : Form
         var response = Folder("iCallManager responseフォルダー（res）", current.ICallResponseDirectory);
         var openResponse = new CheckBox { AutoSize = true, Text = "監視開始時にエクスプローラで開く", Checked = current.OpenResponseFolderOnMonitorStart };
         layout.Controls.Add(openResponse);
+        var startOnLaunch = new CheckBox { AutoSize = true, Text = "アプリ起動時に監視を開始する", Checked = current.StartMonitoringOnLaunch };
+        layout.Controls.Add(startOnLaunch);
+        var pos = new Button { Text = "POSプリンタ設定…（80mm / 58mm・患者用／スタッフ用文面）", AutoSize = true };
+        pos.Click += (_, _) => { using var dialog = new PosPrintSettingsForm(current.PosPrint); if (dialog.ShowDialog(this) == DialogResult.OK) current.PosPrint = dialog.Options; };
+        layout.Controls.Add(pos);
         layout.Controls.Add(new Label { Text = "受付連携方式（一覧の連携ボタン）", AutoSize = true });
         var linkMode = new ComboBox { DropDownStyle = ComboBoxStyle.DropDownList, Width = 300, AccessibleName = "受付連携方式" };
         linkMode.Items.AddRange(["iCall連携", "直接出力（Shift_JIS / CP932）", "連携しない"]);
@@ -34,7 +41,7 @@ public sealed class AgentSettingsForm : Form
         receipt.Enabled = current.ReceptionLinkMode == Reception.ReceptionLinkMode.DirectOutput;
         linkMode.SelectedIndexChanged += (_, _) => receipt.Enabled = linkMode.SelectedIndex == 1;
         var automation = new Button { Text = "Kiosk自動受付設定…（発券・連携・来院確認）", AutoSize = true };
-        automation.Click += (_, _) => { using var dialog = new KioskAutomationSettingsForm(MainForm.DataDirectory); dialog.ShowDialog(this); };
+        automation.Click += (_, _) => { using var dialog = new KioskAutomationSettingsForm(dataDirectory); dialog.ShowDialog(this); };
         layout.Controls.Add(automation);
         layout.Controls.Add(new Label { Text = "face XMLの文字コード", AutoSize = true });
         var encoding = new ComboBox { DropDownStyle = ComboBoxStyle.DropDownList, Width = 220, AccessibleName = "face XMLの文字コード" };
@@ -60,8 +67,9 @@ public sealed class AgentSettingsForm : Form
                 new AgentSettings { OqsRoot = oqs.Text, FaceXmlDirectory = face.Text, FaceTrashDirectory = trash.Text,
                     AutoRegisterReferenceNumber = autoRegister.Checked, ReconcileReferenceNumber = reconcile.Checked, ICallRequestDirectory = request.Text, ICallResponseDirectory = response.Text, MarkArrived = false, LinkReservation = false,
                     OpenResponseFolderOnMonitorStart = openResponse.Checked,
+                    StartMonitoringOnLaunch = startOnLaunch.Checked, PosPrint = current.PosPrint,
                     ReceptionLinkMode = (Reception.ReceptionLinkMode)linkMode.SelectedIndex, DynamicsReceiptDirectory = receipt.Text,
-                    FaceEncoding = encoding.SelectedIndex == 0 ? Face.FaceXmlEncoding.Utf8 : Face.FaceXmlEncoding.ShiftJis }.Save(MainForm.DataDirectory);
+                    FaceEncoding = encoding.SelectedIndex == 0 ? Face.FaceXmlEncoding.Utf8 : Face.FaceXmlEncoding.ShiftJis }.Save(dataDirectory);
                 DialogResult = DialogResult.OK;
             }
             catch (Exception ex) { MessageBox.Show(this, ex.Message, "設定を保存できません", MessageBoxButtons.OK, MessageBoxIcon.Warning); }

@@ -36,6 +36,11 @@ internal static class KioskReceptionOutputTests
         var receipt = sessions.Receipt(s.Id, s.Device);
         check(receipt.PatientId == "00011" && receipt.ReceptionNo == "1" && receipt.Name == "試験患者" && receipt.NameKana == "テスト", "receipt uses linked verified chart name kana and reservation");
         var receiptSession = sessions.Get(s.Id, s.Device);
+        var originalFace = capture.Face;
+        capture.Face = capture.Face! with { PatientName = "マイナ 太郎", NameKana = "マイナ タロウ" };
+        var xmlReceipt = KioskReceipt.Create(receiptSession, capture);
+        check(xmlReceipt.Name == "マイナ 太郎" && xmlReceipt.NameKana == "マイナ タロウ" && xmlReceipt.XmlName == "マイナ 太郎" && xmlReceipt.XmlNameKana == "マイナ タロウ", "Kiosk receipt consistently prefers XML name and kana over confirmed chart values");
+        capture.Face = originalFace;
         receiptSession.State = KioskSessionState.StaffHelp;
         try { KioskReceipt.Create(receiptSession, capture); check(false, "staff receipt"); }
         catch (InvalidOperationException) { check(true, "staff help session cannot produce reception receipt"); }

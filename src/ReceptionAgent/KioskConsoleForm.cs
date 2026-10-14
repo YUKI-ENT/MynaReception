@@ -4,7 +4,7 @@ using ReceptionAgent.Kiosk;
 
 namespace ReceptionAgent;
 
-internal sealed class KioskConsoleForm : Form
+internal sealed class KioskConsoleForm : ReceptionAgentForm
 {
     private readonly System.Windows.Forms.Timer timer = new() { Interval = 1000 };
     public KioskConsoleForm(KioskSessions sessions, Func<string> serverUrl)
@@ -119,7 +119,7 @@ internal sealed class KioskConsoleForm : Form
             }
             catch (Exception ex) { MessageBox.Show(this, ex.Message, "結果確認"); }
         };
-        receiptSample.Click += (_, _) => { using var form = new KioskReceiptForm(new("sample", "12345", "受付 太郎", "ウケツケ タロウ", "37", DateTimeOffset.Now), true); form.ShowDialog(this); };
+        receiptSample.Click += (_, _) => { using var form = new KioskReceiptForm(new("sample", "12345", "受付 太郎", "ウケツケ タロウ", "37", DateTimeOffset.Now) { XmlName = "受付 太郎", XmlNameKana = "ウケツケ タロウ" }, true); form.ShowDialog(this); };
         commands.Controls.AddRange([editFlow, autoSettings, save, preview, open, cancel, review, receipt, receiptSample]); layout.Controls.Add(commands, 0, 5); layout.Controls.Add(result, 0, 6); Controls.Add(layout);
         Shown += (_, _) => { Reload(); timer.Start(); }; timer.Tick += (_, _) => Reload();
         FormClosed += (_, _) => { timer.Stop(); timer.Dispose(); };

@@ -5,7 +5,7 @@ using ReceptionAgent.Reception;
 
 namespace ReceptionAgent;
 
-internal sealed class KioskFlowEditorForm : Form
+internal sealed class KioskFlowEditorForm : ReceptionAgentForm
 {
     private sealed record Pick(string Key, string Label);
     public KioskFlow Flow { get; private set; }
@@ -165,7 +165,7 @@ internal sealed class KioskFlowEditorForm : Form
     private void AddField()
     {
         if (current?.Kind != KioskPageKind.Choice) throw new ArgumentException("質問ページを選んでから保存項目を追加してください。");
-        using var dialog = new Form { Text = "回答の保存項目を追加", Size = new Size(420, 180), StartPosition = FormStartPosition.CenterParent };
+        using var dialog = new ReceptionAgentForm { Text = "回答の保存項目を追加", Size = new Size(420, 180), StartPosition = FormStartPosition.CenterParent };
         var panel = new FlowLayoutPanel { Dock = DockStyle.Fill, Padding = new Padding(16) };
         panel.Controls.Add(new Label { Text = "項目の名前（例：ワクチンの種類）", AutoSize = true }); var name = new TextBox { Width = 360 }; panel.Controls.Add(name);
         var ok = new Button { Text = "追加", DialogResult = DialogResult.OK }; panel.Controls.Add(ok); dialog.Controls.Add(panel); dialog.AcceptButton = ok;
