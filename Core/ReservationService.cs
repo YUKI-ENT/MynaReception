@@ -127,6 +127,8 @@ public sealed class ReservationService : IDisposable
                 ReservationCandidateSearch.Validate(request);
                 return ReservationCandidateSearch.Search(request, ReadLookupCache(request));
             }
+            if (request.Action == "arrived") return MarkArrived(request);
+            if (request.Action == "link") return EnsureLinked(ResolveReception(request));
             if (string.IsNullOrWhiteSpace(request.PatientId) || request.PatientId.Length > 100)
                 return new(false, "invalid_request", "patientIdを指定してください。");
             if (request.Action is not ("find" or "arrived" or "link" or "print" or "assign"))
@@ -145,27 +147,48 @@ public sealed class ReservationService : IDisposable
             if (request.ExpectedReceptionNo != row.ReceptionNo || request.ExpectedPatientName != row.PatientName)
                 return new(false, "identity_changed", "find結果の受付番号・患者名と一致しません。再確認してください。");
             if (!operationsEnabled) return new(false, "operations_disabled", "実操作が無効になりました。");
-            if (request.Action == "print") return printer.Print(row);
-            if (request.Action == "link") return EnsureLinked(row);
-            if (request.Action == "arrived" && !row.CanMarkArrived || request.Action == "link" && !row.CanLink)
-                return new(false, "action_unavailable", "対象ボタンがありません、または操作できません。実行済みとは断定しません。", row);
-            try { adapter!.Invoke(row, request.Action, () => operationsEnabled); }
-            catch (BridgeException) { throw; }
-            catch
-            {
-                Volatile.Write(ref snapshot, Snapshot with { IsCurrent = false, Status = "操作結果不明・職員確認が必要" });
-                return new(false, "outcome_unknown", "操作中にエラーが発生しました。再送せずiCall画面を確認してください。", row);
-            }
-            // Invoke succeeding only confirms dispatch, not completion in iCall/Dynamics.
-            Volatile.Write(ref snapshot, Snapshot with { IsCurrent = false, Status = "操作送信済み・次回同期待ち" });
-            return new(true, "invoked", "ボタン操作を送信しました。処理完了はiCall／Dynamics側で確認してください。", row);
+            return printer.Print(row);
         }
         catch (BridgeException ex) { return new(false, ex.Code, ex.Message); }
         catch { return new(false, "automation_unavailable", "iCallの読取に失敗しました。ログイン状態・表示画面を確認してください。"); }
     }
 
+    private Reservation ResolveReception(BridgeRequest request)
+    {
+        string? receptionNo = request.ReceptionNo ?? request.ExpectedReceptionNo;
+        if (receptionNo is null || !System.Text.RegularExpressions.Regex.IsMatch(receptionNo, @"\A[0-9]{1,50}\z") ||
+            request.ReceptionNo is not null && request.ExpectedReceptionNo is not null && request.ReceptionNo != request.ExpectedReceptionNo ||
+            request.PatientId?.Length > 100)
+            throw new BridgeException("invalid_request", "receptionNoに受付番号を半角数字で指定してください。expectedReceptionNoを併記する場合は同じ番号にしてください。");
+        if (!operationsEnabled)
+            throw new BridgeException("operations_disabled", "アプリで実操作を有効にしてください。");
+        // Always resolve against the live list, including patients without a card ID.
+        var row = ReceptionTarget.Select(Read(), receptionNo, request.PatientId);
+        if (string.IsNullOrWhiteSpace(row.InternalId))
+            throw new BridgeException("identity_missing", "対象受付の内部予約IDを確認できません。操作は行いません。");
+        return row;
+    }
+
+    private OperationResult MarkArrived(BridgeRequest request)
+    {
+        var row = ResolveReception(request);
+        if (!row.CanMarkArrived)
+            return new(false, "action_unavailable", "来院確認ボタンがありません、または操作できません。", row);
+        try { adapter!.Invoke(row, "arrived", () => operationsEnabled); }
+        catch (BridgeException) { throw; }
+        catch
+        {
+            Volatile.Write(ref snapshot, Snapshot with { IsCurrent = false, Status = "操作結果不明・職員確認が必要" });
+            return new(false, "outcome_unknown", "操作中にエラーが発生しました。再送せずiCall画面を確認してください。", row);
+        }
+        Volatile.Write(ref snapshot, Snapshot with { IsCurrent = false, Status = "操作送信済み・次回同期待ち" });
+        return new(true, "invoked", "来院確認ボタン操作を送信しました。処理完了はiCall側で確認してください。", row);
+    }
+
     private OperationResult EnsureLinked(Reservation expected)
     {
+        if (expected.IsUnassignedDummy)
+            return new(false, "action_unavailable", "患者未割当のダミー枠は連携できません。", expected);
         if (expected.LinkButtonName == "〆")
             return new(true, "already_linked", "既に連携ONです。ボタンは押していません。", expected);
         if (expected.LinkButtonName != "")
@@ -173,30 +196,46 @@ public sealed class ReservationService : IDisposable
         if (!expected.CanLink)
             return new(false, "action_unavailable", "連携ボタンを操作できません。", expected);
         bool dispatched = false;
+        string phase = "button_dispatch";
+        string cause = "";
+        string? lastState = expected.LinkButtonName;
+        var clock = System.Diagnostics.Stopwatch.StartNew();
+        OperationalLog.Write("link_started", new { expected.ReceptionNo, expected.InternalId, expected.LinkButtonName });
         try
         {
             adapter!.Invoke(expected, "link", () => operationsEnabled);
             dispatched = true;
-            var clock = System.Diagnostics.Stopwatch.StartNew();
+            phase = "on_confirmation";
+            clock.Restart();
             do
             {
-                var matches = Read().Where(r => r.PatientId == expected.PatientId).ToArray();
-                if (matches.Length != 1 || matches[0].ReceptionNo != expected.ReceptionNo ||
-                    matches[0].PatientName != expected.PatientName || matches[0].InternalId != expected.InternalId)
-                    break;
-                if (matches[0].LinkButtonName == "〆")
-                    return new(true, "linked", "連携ボタンのON（〆）を確認しました。", matches[0]);
+                var current = ReceptionTarget.Verify(Read(), expected);
+                lastState = current.LinkButtonName;
+                if (current.LinkButtonName == "〆")
+                {
+                    OperationalLog.Write("link_confirmed", new { expected.ReceptionNo, expected.InternalId, elapsedMs = clock.Elapsed.TotalMilliseconds });
+                    return new(true, "linked", "連携ボタンのON（〆）を確認しました。", current);
+                }
                 Thread.Sleep(200);
             } while (clock.Elapsed < TimeSpan.FromSeconds(8));
+            phase = "on_confirmation_timeout";
+            cause = $"最終の連携表示=[{lastState ?? "<missing>"}]";
         }
         catch (BridgeException ex) when (!dispatched && ex.Code != "outcome_unknown")
         {
+            OperationalLog.Write("link_failed", new { phase, dispatched, expected.ReceptionNo, expected.InternalId, ex.Code, ex.Message });
             Volatile.Write(ref snapshot, Snapshot with { IsCurrent = false, Status = "連携未完了・画面確認が必要" });
             return new(false, ex.Code, ex.Message, expected);
         }
-        catch { }
+        catch (Exception ex)
+        {
+            cause = ex is BridgeException bridge ? $"[cause={bridge.Code}] {bridge.Message}" : $"{ex.GetType().Name} HRESULT=0x{ex.HResult:X8}";
+            OperationalLog.Write("link_failed", new { phase, dispatched, expected.ReceptionNo, expected.InternalId, cause, ex.StackTrace });
+        }
+        OperationalLog.Write("link_outcome_unknown", new { phase, dispatched, expected.ReceptionNo, expected.InternalId,
+            lastState, cause, elapsedMs = clock.Elapsed.TotalMilliseconds });
         Volatile.Write(ref snapshot, Snapshot with { IsCurrent = false, Status = "連携結果不明・画面確認が必要" });
-        return new(false, "outcome_unknown", "連携ONを確認できません。自動で再押下せず、iCall画面を確認してください。", expected);
+        return new(false, "outcome_unknown", $"連携ONを確認できません。自動で再押下せず、iCall画面を確認してください。[link-v2 phase={phase}] {cause}", expected);
     }
 
     private OperationResult Assign(BridgeRequest request)
@@ -213,7 +252,7 @@ public sealed class ReservationService : IDisposable
         {
             var assigned = adapter!.AssignDummy(expected, request.PatientId, () => operationsEnabled);
             // Read again through the ordinary list path, independently of the popup result.
-            var verifiedRows = Read();
+            var verifiedRows = AssignmentConfirmation.Read(Read, "assigned_list_independent");
             var verified = verifiedRows.Where(r => r.PatientId == request.PatientId).ToArray();
             if (verified.Length != 1 || !verified[0].HasPatientIdentity || verified[0].ReceptionNo != expected.ReceptionNo ||
                 assigned.PatientId != request.PatientId || assigned.ReceptionNo != expected.ReceptionNo ||

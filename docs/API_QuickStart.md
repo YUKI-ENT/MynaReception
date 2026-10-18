@@ -50,28 +50,26 @@
 |---|---|
 | `find` | 患者IDから受付番号を取得（読取のみ） |
 | `find_candidates` | 氏名欄の生年月日が一致する予約候補を取得（読取のみ・本人確認が必要） |
-| `arrived` | 対象患者の「来院確認」ボタンを実行 |
-| `link` | 対象患者の「連携」ボタンを実行 |
+| `arrived` | 受付番号で指定した行の「来院確認」ボタンを実行 |
+| `link` | 受付番号で指定した行を連携ONにする |
 
-操作要求は、直前のfind結果の受付番号・患者名を付け、新しい要求IDで送ります。
+来院確認・連携は現在の一覧の受付番号を指定し、新しい要求IDで送ります。診察券番号・患者名は不要です。
 
 ```json
 {
   "requestId": "test-arrived-001",
   "action": "arrived",
-  "patientId": "00011",
-  "expectedReceptionNo": "102",
-  "expectedPatientName": "テスト　患者"
+  "receptionNo": "102"
 }
 ```
 
-連携は `action` を `link`、`requestId` を例えば `test-link-001` にします。ファイル名も要求IDと一致させます。
+連携は `action` を `link` に変更します。ファイル名は要求IDと一致させます。連携ONを確認すると `linked`、既にONなら押さずに `already_linked` を返します。
 
-アプリ側の「実操作を有効化」が必要です。無効なら `operations_disabled`、番号・氏名が変われば `identity_changed` を返します。患者IDが未確定の行は操作できません。
+アプリ側の「実操作を有効化」が必要です。来院確認・連携では同じ受付番号が複数あれば `ambiguous_reception`、押下直前に内部予約IDや診察券番号が変われば `identity_changed` を返します。初診など診察券番号がない行も、対象ボタンと内部予約IDを確認できれば操作できます。患者未割当のダミー枠は連携しません。`patientId` を併記した場合だけ、その診察券番号も追加照合します。要求の患者名は照合しません。`expectedReceptionNo` は従来要求との互換用に受付番号指定として受け付けます。両方の番号がある場合は一致が必要です。
 
 `success: true, code: "invoked"` はボタン操作を送信した意味です。Dynamicsへの登録完了までを保証する値ではありません。処理結果が不明な `outcome_unknown` は再実行せず、iCall側を確認してください。
 
-## 患者IDと操作名だけで試すスクリプト
+## 要求を送信するスクリプト
 
 `scripts/Send-ICallRequest.ps1` をPowerShellから実行します。Windows PowerShell 5.1／PowerShell 7向けで、追加ライブラリは不要です。
 
@@ -83,13 +81,13 @@
 .\scripts\Send-ICallRequest.ps1 -BridgeDirectory '\\iCallPC\iCallBridge' -PatientId '00011' -Action find
 
 # 来院確認（実際に操作します）
-.\scripts\Send-ICallRequest.ps1 -BridgeDirectory '\\iCallPC\iCallBridge' -PatientId '00011' -Action arrived
+.\scripts\Send-ICallRequest.ps1 -BridgeDirectory '\\iCallPC\iCallBridge' -ReceptionNo '1' -Action arrived
 
 # 連携（実際に操作します）
-.\scripts\Send-ICallRequest.ps1 -BridgeDirectory '\\iCallPC\iCallBridge' -PatientId '00011' -Action link
+.\scripts\Send-ICallRequest.ps1 -BridgeDirectory '\\iCallPC\iCallBridge' -ReceptionNo '1' -Action link
 ```
 
-来院確認・連携の場合は、スクリプトがfind→結果照合用情報を付けて操作要求、の2段階を実行します。find失敗時は操作しません。各要求IDと応答の保存場所を表示し、最後に応答オブジェクトを返します。アプリの確認ダイアログはデバッグボタン用なので、SMB経由の要求では表示しません。
+来院確認・連携は受付番号を指定して直接送ります。各要求IDと応答の保存場所を表示し、最後に応答オブジェクトを返します。アプリの確認ダイアログはデバッグボタン用なので、SMB経由の要求では表示しません。
 
 ## 送信時のルール
 

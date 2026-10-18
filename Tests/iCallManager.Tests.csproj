@@ -4,6 +4,7 @@
     <TargetFramework>net10.0-windows</TargetFramework>
     <ImplicitUsings>enable</ImplicitUsings>
     <Nullable>enable</Nullable>
+    <UseWindowsForms>true</UseWindowsForms>
   </PropertyGroup>
   <ItemGroup>
     <None Update="Fixtures\*.txt" CopyToOutputDirectory="PreserveNewest" />
@@ -11,5 +12,7 @@
     <Compile Include="..\Bridge\*.cs" Link="Bridge\%(Filename)%(Extension)" />
     <Compile Include="..\ICall\RowParser.cs" Link="ICall\RowParser.cs" />
     <Compile Include="..\ICall\DummyAssignmentParser.cs" Link="ICall\DummyAssignmentParser.cs" />
+    <Compile Include="..\ICall\ICallWindowSelector.cs" Link="ICall\ICallWindowSelector.cs" />
+    <Compile Include="..\ICall\IEAssignmentDom.cs" Link="ICall\IEAssignmentDom.cs" />
   </ItemGroup>
 </Project>

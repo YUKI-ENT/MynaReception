@@ -8,7 +8,8 @@ using ReceptionAgent.Oqs.ReferenceNumber;
 namespace ReceptionAgent.Reception;
 
 public sealed class FaceCaptureMonitor(CaptureStore store, AgentSettings settings, Func<FaceIdentity, CancellationToken, Task<FaceLookupResult>> lookup, SingleReferenceRegistrationService? registration = null,
-    Func<FaceIdentity, CancellationToken, Task<FaceLookupResult>>? verify = null)
+    Func<FaceIdentity, CancellationToken, Task<FaceLookupResult>>? verify = null, Func<ReceptionOperationMode>? operationMode = null,
+    Func<AgentSettings>? currentSettings = null)
 {
     private readonly ConcurrentDictionary<string, (long, DateTime)> seen = new(StringComparer.OrdinalIgnoreCase);
     private readonly ConcurrentDictionary<string, DateTimeOffset> firstSeen = new(StringComparer.OrdinalIgnoreCase);
@@ -134,7 +135,7 @@ public sealed class FaceCaptureMonitor(CaptureStore store, AgentSettings setting
                     try { face = FaceXmlParser.Parse(bytes, settings.FaceEncoding); }
                     catch (System.Xml.XmlException) { previous = bytes; await Task.Delay(300, token); continue; }
                     catch (Exception ex) when (ex is InvalidDataException or System.Text.DecoderFallbackException or ArgumentException) { error = ex.Message; }
-                    var record = new CaptureRecord { FirstSeenAt = firstSeenAt, FileName = Path.GetFileName(path), ContentHash = Convert.ToHexString(SHA256.HashData(bytes)),
+                    var record = new CaptureRecord { OperationMode = operationMode?.Invoke() ?? settings.OperationMode, FirstSeenAt = firstSeenAt, FileName = Path.GetFileName(path), ContentHash = Convert.ToHexString(SHA256.HashData(bytes)),
                         SourcePath = actual, GeneratedAt = generatedAt, FileCreatedAt = new DateTimeOffset(created), Encoding = settings.FaceEncoding,
                         Face = face, XmlPatientName = face?.PatientName ?? "", RequestDirectory = settings.ICallRequestDirectory, ResponseDirectory = settings.ICallResponseDirectory,
                         AutoRegisterReferenceNumber = settings.AutoRegisterReferenceNumber, RegistrationOqsRoot = settings.OqsRoot,
@@ -156,7 +157,7 @@ public sealed class FaceCaptureMonitor(CaptureStore store, AgentSettings setting
     }
     private async Task ProcessLoop(CancellationToken token)
     {
-        var workflow = new ReceptionWorkflow(store, lookup);
+        var workflow = new ReceptionWorkflow(store, lookup, settings, currentSettings);
         while (true)
         {
             token.ThrowIfCancellationRequested();

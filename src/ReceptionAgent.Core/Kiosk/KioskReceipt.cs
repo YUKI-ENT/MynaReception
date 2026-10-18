@@ -9,6 +9,20 @@ public sealed record KioskReceipt(string SessionId, string PatientId, string Nam
     public string XmlName { get; init; } = "";
     public string XmlNameKana { get; init; } = "";
 
+    public static bool CanPrintStaff(CaptureRecord capture) => !capture.Conflict && !capture.ReconciliationIdentityMismatch &&
+        capture.Face is not null && (!string.IsNullOrWhiteSpace(capture.Face.PatientName) || !string.IsNullOrWhiteSpace(capture.XmlPatientName)) &&
+        (capture.Stage is CaptureStage.Completed or CaptureStage.NeedsReview ||
+            capture.RetryAfter != default && capture.Stage is CaptureStage.Captured or CaptureStage.FindWaiting or CaptureStage.CandidateFindWaiting);
+
+    public static KioskReceipt CreateStaff(CaptureRecord capture)
+    {
+        if (!CanPrintStaff(capture)) throw new InvalidOperationException("XMLの氏名を取得し、患者・予約の照会が終了した受付を選択してください。");
+        var patient = capture.Lookup is { Selected: not null, Candidates.Count: 1 } ? capture.Lookup.Selected : null;
+        string id = patient is not null && (capture.VerifiedPatientId.Length == 0 || capture.VerifiedPatientId == patient.PatientId) ? patient.PatientId : "";
+        string number = capture.ReservationFoundAtReception == true ? capture.ReceptionNo : "";
+        return new KioskReceipt(capture.Id, id, patient?.Name ?? capture.ReservationPatientName, patient?.NameKana ?? "", number, capture.CapturedAt).WithXmlIdentity(capture);
+    }
+
     public KioskReceipt WithXmlIdentity(CaptureRecord capture)
     {
         string xmlName = !string.IsNullOrWhiteSpace(capture.Face?.PatientName) ? capture.Face.PatientName : capture.XmlPatientName;

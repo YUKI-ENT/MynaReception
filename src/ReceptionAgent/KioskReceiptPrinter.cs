@@ -8,11 +8,30 @@ internal static class KioskReceiptPrinter
     public static void Print(KioskReceipt receipt, string printerName) => Print(receipt, printerName, AgentSettings.Load(MainForm.DataDirectory).PosPrint);
 
     public static void Print(KioskReceipt receipt, string printerName, PosPrintOptions options, bool sample = false)
+        => Print(receipt, new PrinterSettings { PrinterName = printerName }, null, options, sample);
+
+    public static void Print(KioskReceipt receipt, PrinterSettings printerSettings, PageSettings? pageSettings, PosPrintOptions options, bool sample = false)
+    {
+        // Keep the driver's private settings from PrintDialog, including its cutter preferences.
+        options.Validate();
+        if (options.SeparateJobsPerReceipt)
+        {
+            PrintJob(receipt, printerSettings, pageSettings, options, sample, 0, 1);
+            PrintJob(receipt, printerSettings, pageSettings, options, sample, 1, 1);
+        }
+        else PrintJob(receipt, printerSettings, pageSettings, options, sample, 0, 2);
+    }
+
+    private static void PrintJob(KioskReceipt receipt, PrinterSettings settings, PageSettings? pageSettings,
+        PosPrintOptions options, bool sample, int startPage, int pageCount)
     {
         options.Validate();
+        string printerName = settings.PrinterName;
         if (string.IsNullOrWhiteSpace(printerName)) throw new InvalidOperationException("発券プリンタが未設定です。");
         using var document = new PrintDocument { DocumentName = sample ? "受付票テスト見本" : "受付票（患者用・スタッフ用）", PrintController = new StandardPrintController() };
-        document.PrinterSettings.PrinterName = printerName;
+        document.PrinterSettings = (PrinterSettings)settings.Clone();
+        document.DefaultPageSettings = (PageSettings)(pageSettings ?? settings.DefaultPageSettings).Clone();
+        document.DefaultPageSettings.PrinterSettings = document.PrinterSettings;
         if (!document.PrinterSettings.IsValid) throw new InvalidOperationException("発券プリンタが見つかりません: " + printerName);
         if (document.PrinterSettings.PrintToFile || printerName.Contains("PDF", StringComparison.OrdinalIgnoreCase) ||
             printerName.Contains("XPS", StringComparison.OrdinalIgnoreCase) || printerName.Equals("Fax", StringComparison.OrdinalIgnoreCase))
@@ -29,8 +48,8 @@ internal static class KioskReceiptPrinter
         if (heights.Any(h => h > 1200)) throw new InvalidOperationException("文面が長すぎます。各用紙が約300mm以内になるように編集してください。");
         document.DefaultPageSettings.Margins = new Margins(12, 12, 12, 12);
         document.DefaultPageSettings.Landscape = false;
-        int page = 0;
-        document.BeginPrint += (_, _) => page = 0;
+        int page = startPage;
+        document.BeginPrint += (_, _) => page = startPage;
         document.QueryPageSettings += (_, e) => e.PageSettings.PaperSize = new PaperSize($"受付票 {options.PaperWidthMm}mm", width, heights[page]);
         document.PrintPage += (_, e) =>
         {
@@ -42,7 +61,7 @@ internal static class KioskReceiptPrinter
                 throw new InvalidOperationException("プリンタの印刷可能領域に文面が収まりません。用紙サイズ設定と文面を確認してください。");
             g.TranslateTransform(Math.Max(0, 12 - e.PageSettings.HardMarginX), Math.Max(0, 12 - e.PageSettings.HardMarginY));
             PosReceiptLayout.Draw(g, drawWidth, options, receipt, page == 1, sample);
-            page++; e.HasMorePages = page < 2;
+            page++; e.HasMorePages = page < startPage + pageCount;
         };
         document.Print();
     }

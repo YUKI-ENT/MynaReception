@@ -7,20 +7,21 @@ public static class DummyAssignmentParser
 {
     private static string Normalize(string text) => Regex.Replace(text, @"[\s　:：]", "");
     private static IEnumerable<UiNode> All(UiNode node) => new[] { node }.Concat(node.Descendants());
+    private static bool IsFrame(UiNode node) => node.ControlType is 50032 or 50033;
 
     public static UiNode Scope(UiNode root)
     {
-        var frames = All(root).Where(n => n.ControlType == 50032 &&
+        var frames = All(root).Where(n => IsFrame(n) &&
             Normalize(n.Name) == "順番ダミー割当" && n.Descendants().Any(c => c.AutomationId == "findword")).ToArray();
         if (frames.Length == 1) return frames[0];
-        var windows = All(root).Where(n => n.ControlType == 50032 &&
+        var windows = All(root).Where(n => IsFrame(n) &&
             Normalize(n.Name).Contains("順番待ち予約ダミー割当") &&
             n.Descendants().Any(c => c.AutomationId == "findword")).ToArray();
         var innermost = windows.Where(n => !n.Descendants().Any(windows.Contains)).ToArray();
         if (innermost.Length != 1) throw new BridgeException("assignment_popup_not_unique", "ダミー割当画面を1つに特定できません。");
         return innermost[0];
     }
-    public static bool HasPopup(UiNode root) => All(root).Any(n => n.ControlType == 50032 &&
+    public static bool HasPopup(UiNode root) => All(root).Any(n => IsFrame(n) &&
         (Normalize(n.Name) == "順番ダミー割当" || Normalize(n.Name).Contains("順番待ち予約ダミー割当")));
 
     public static UiNode Input(UiNode scope)
@@ -54,14 +55,14 @@ public static class DummyAssignmentParser
         var edits = node.Descendants().Where(n => n.ControlType == 50004).ToArray();
         return edits.Length == 1 ? edits[0].Value : node.Name.Trim();
     }
-    private static string Label(UiNode scope, string label)
+    private static string Label(UiNode scope, string label, bool allowEmpty = false)
     {
         var values = new List<string>();
         foreach (var parent in All(scope))
             for (int i = 0; i + 1 < parent.Children.Count; i++)
                 if (Normalize(Text(parent.Children[i])) == label)
                     values.Add(Text(parent.Children[i + 1]).Trim());
-        if (values.Count != 1 || string.IsNullOrWhiteSpace(values[0]))
+        if (values.Count != 1 || !allowEmpty && string.IsNullOrWhiteSpace(values[0]))
             throw new BridgeException("patient_search_unverified", label + "の結果を1件に特定できません。");
         return values[0];
     }
@@ -81,9 +82,14 @@ public static class DummyAssignmentParser
     }
     public static AssignmentPatient Patient(UiNode scope, string expectedPatientId)
     {
-        var patient = new AssignmentPatient(Label(scope, "診察券"), Label(scope, "おなまえ"));
+        var patient = new AssignmentPatient(Label(scope, "診察券", allowEmpty: true), Label(scope, "おなまえ", allowEmpty: true));
+        if (string.IsNullOrWhiteSpace(patient.PatientId) || string.IsNullOrWhiteSpace(patient.PatientName))
+            throw new BridgeException("patient_search_empty", "患者検索後の診察券番号・患者名が空欄です。検索結果が画面に反映されていません。");
         if (patient.PatientId != expectedPatientId || patient.PatientName == "-")
             throw new BridgeException("patient_search_unverified", "検索結果の診察券番号が要求と一致しません。");
+        string query = Input(scope).Value;
+        if (query.Length > 0 && query != expectedPatientId)
+            throw new BridgeException("patient_input_mismatch", "検索結果の表示後に診察券番号入力欄が別の番号に変わりました。");
         Button(scope, "割当する");
         return patient;
     }

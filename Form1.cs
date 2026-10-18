@@ -99,7 +99,7 @@ public partial class Form1 : Form
                 string diagnostic = await service.DiagnoseAsync(shutdown.Token);
                 if (closing) return;
                 using var viewer = new Form { Text = "行構造診断 — 患者情報を含みます", Icon = this.Icon, Size = new Size(1000, 700), StartPosition = FormStartPosition.CenterParent };
-                viewer.Controls.Add(new TextBox { Dock = DockStyle.Fill, Multiline = true, ReadOnly = true, ScrollBars = ScrollBars.Both, WordWrap = false, Text = diagnostic });
+                viewer.Controls.Add(new TextBox { Dock = DockStyle.Fill, Multiline = true, ReadOnly = true, MaxLength = 0, ScrollBars = ScrollBars.Both, WordWrap = false, Text = diagnostic });
                 viewer.ShowDialog(this);
             }
             catch (Exception ex) { Log("診断失敗: " + ex.Message); }
@@ -189,7 +189,10 @@ public partial class Form1 : Form
             if (confirm.Checked && MessageBox.Show(this,
                 $"受付番号: {row.ReceptionNo}\n患者ID: {row.PatientId}\n患者名: {row.PatientName}\n\n「{label}」を実行しますか？",
                 "実操作の確認", MessageBoxButtons.YesNo, MessageBoxIcon.Question, MessageBoxDefaultButton.Button2) != DialogResult.Yes) return;
-            var result = await service.ExecuteAsync(new(Guid.NewGuid().ToString("N"), action, row.PatientId, row.ReceptionNo, row.PatientName), shutdown.Token);
+            var request = action is "arrived" or "link"
+                ? new BridgeRequest(Guid.NewGuid().ToString("N"), action) { ReceptionNo = row.ReceptionNo }
+                : new BridgeRequest(Guid.NewGuid().ToString("N"), action, row.PatientId, row.ReceptionNo, row.PatientName);
+            var result = await service.ExecuteAsync(request, shutdown.Token);
             Log($"{label}: {result.Code} — {result.Message}");
         }
         catch (Exception ex) { Log("操作エラー: " + ex.Message); }

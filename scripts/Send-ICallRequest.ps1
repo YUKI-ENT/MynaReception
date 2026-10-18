@@ -4,24 +4,30 @@ Send a find/arrived/link/assign request to the iCallManager SMB JSON bridge.
 .EXAMPLE
 .\Send-ICallRequest.ps1 -PatientId '00011'
 .EXAMPLE
-.\Send-ICallRequest.ps1 -BridgeDirectory '\\iCallPC\iCallBridge' -PatientId '00011' -Action arrived
+.\Send-ICallRequest.ps1 -BridgeDirectory '\\iCallPC\iCallBridge' -ReceptionNo '1' -Action arrived
 #>
 [CmdletBinding()]
 param(
-    [Parameter(Mandatory = $true)]
-    [ValidateNotNullOrEmpty()]
-    [string]$PatientId,
+    [string]$PatientId = '',
     [ValidateSet('find', 'arrived', 'link', 'assign')]
     [string]$Action = 'find',
     [string]$BridgeDirectory = '',
     [string]$ExpectedReceptionNo = '',
+    [string]$ReceptionNo = '',
     [ValidateRange(1, 300)]
     [int]$TimeoutSeconds = 60
 )
 
 $ErrorActionPreference = 'Stop'
-if ([string]::IsNullOrWhiteSpace($PatientId) -or $PatientId -eq '-') {
+if ($Action -notin @('arrived', 'link') -and ([string]::IsNullOrWhiteSpace($PatientId) -or $PatientId -eq '-')) {
     throw 'Specify a patient ID. Unassigned reservations cannot be operated by this API.'
+}
+if ($Action -in @('arrived', 'link')) {
+    if (![string]::IsNullOrWhiteSpace($ReceptionNo) -and ![string]::IsNullOrWhiteSpace($ExpectedReceptionNo) -and $ReceptionNo -cne $ExpectedReceptionNo) {
+        throw 'ReceptionNo and ExpectedReceptionNo must agree.'
+    }
+    if ([string]::IsNullOrWhiteSpace($ReceptionNo)) { $ReceptionNo = $ExpectedReceptionNo }
+    if ($ReceptionNo -notmatch '\A[0-9]{1,50}\z') { throw 'Arrived/link requires a numeric ReceptionNo.' }
 }
 if ([string]::IsNullOrWhiteSpace($BridgeDirectory)) {
     $settingsPath = Join-Path $env:LOCALAPPDATA 'iCallManager\settings.json'
@@ -47,7 +53,10 @@ function Send-BridgeCommand([string]$Command, $Reservation) {
         action = $Command
         patientId = $PatientId
     }
-    if ($Command -eq 'assign') {
+    if ($Command -in @('arrived', 'link')) {
+        $request.receptionNo = $ReceptionNo
+    }
+    elseif ($Command -eq 'assign') {
         if (![string]::IsNullOrWhiteSpace($ExpectedReceptionNo)) { $request.expectedReceptionNo = $ExpectedReceptionNo }
     }
     elseif ($Command -ne 'find') {
@@ -81,6 +90,7 @@ function Send-BridgeCommand([string]$Command, $Reservation) {
     throw "Timed out. The request was NOT cancelled. Check $responsePath before running another operation."
 }
 
+if ($Action -in @('arrived', 'link')) { return Send-BridgeCommand $Action $null }
 if ($Action -eq 'assign') {
     if ($PatientId -notmatch '\A[0-9]{1,50}\z') { throw 'Assign requires a numeric chart number without a Dynamics branch digit.' }
     return Send-BridgeCommand 'assign' $null

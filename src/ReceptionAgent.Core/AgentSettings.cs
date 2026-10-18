@@ -4,6 +4,7 @@ namespace ReceptionAgent;
 
 public sealed class AgentSettings
 {
+    public Reception.ReceptionOperationMode OperationMode { get; set; } = Reception.ReceptionOperationMode.Kiosk;
     public string OqsRoot { get; set; } = "";
     public string FaceXmlDirectory { get; set; } = "";
     public string FaceTrashDirectory { get; set; } = "";
@@ -16,6 +17,8 @@ public sealed class AgentSettings
     public bool ReconcileReferenceNumber { get; set; } = true;
     public bool MarkArrived { get; set; }
     public bool LinkReservation { get; set; }
+    public bool AutoArrival { get; set; }
+    public bool AutoLink { get; set; }
     public Reception.ReceptionLinkMode ReceptionLinkMode { get; set; } = Reception.ReceptionLinkMode.ICall;
     public string DynamicsReceiptDirectory { get; set; } = "";
     public Face.FaceXmlEncoding FaceEncoding { get; set; } = Face.FaceXmlEncoding.Utf8;
@@ -27,6 +30,7 @@ public sealed class AgentSettings
     }
     public void Save(string directory)
     {
+        if (!Enum.IsDefined(OperationMode)) throw new InvalidDataException("受付モードが不正です。");
         PosPrint.Validate();
         string normalized = string.IsNullOrWhiteSpace(OqsRoot) ? "" : NormalizeRoot(OqsRoot);
         if (AutoRegisterReferenceNumber && normalized.Length == 0) throw new ArgumentException("自動照会番号登録にはOQS連携フォルダーを指定してください。");
@@ -46,8 +50,8 @@ public sealed class AgentSettings
             using (var stream = new FileStream(temp, FileMode.CreateNew, FileAccess.Write, FileShare.None))
             { JsonSerializer.Serialize(stream, new AgentSettings { OqsRoot = normalized, FaceXmlDirectory = faceDirectory, FaceEncoding = FaceEncoding,
                 AutoRegisterReferenceNumber = AutoRegisterReferenceNumber, ReconcileReferenceNumber = ReconcileReferenceNumber, FaceTrashDirectory = trash, ICallRequestDirectory = request, ICallResponseDirectory = response,
-                OpenResponseFolderOnMonitorStart = OpenResponseFolderOnMonitorStart, MarkArrived = MarkArrived, LinkReservation = LinkReservation,
-                StartMonitoringOnLaunch = StartMonitoringOnLaunch, PosPrint = PosPrint,
+                OpenResponseFolderOnMonitorStart = OpenResponseFolderOnMonitorStart, MarkArrived = MarkArrived, LinkReservation = LinkReservation, AutoArrival = AutoArrival, AutoLink = AutoLink,
+                StartMonitoringOnLaunch = StartMonitoringOnLaunch, PosPrint = PosPrint, OperationMode = OperationMode,
                 ReceptionLinkMode = ReceptionLinkMode, DynamicsReceiptDirectory = receipt }, new JsonSerializerOptions { WriteIndented = true }); stream.Flush(true); }
             File.Move(temp, path, true); OqsRoot = normalized; FaceXmlDirectory = faceDirectory;
             FaceTrashDirectory = trash; ICallRequestDirectory = request; ICallResponseDirectory = response;
@@ -64,6 +68,7 @@ public sealed class AgentSettings
     }
     public void ValidateMonitoring()
     {
+        if (!Enum.IsDefined(OperationMode)) throw new InvalidDataException("受付モードが不正です。");
         if (!Enum.IsDefined(ReceptionLinkMode)) throw new InvalidDataException("受付連携方式が不正です。");
         if (ReceptionLinkMode == Reception.ReceptionLinkMode.DirectOutput) NormalizeRoot(DynamicsReceiptDirectory);
         // Validate configuration here; remote availability is retried by the monitor in the background.

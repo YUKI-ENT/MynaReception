@@ -8,6 +8,7 @@ public sealed class PosPrintOptions
     public bool Enabled { get; set; }
     public string PrinterName { get; set; } = "POS-80C";
     public int PaperWidthMm { get; set; } = 80;
+    public bool SeparateJobsPerReceipt { get; set; } = true;
     public string ClinicName { get; set; } = "医院名";
     public string PatientTemplate { get; set; } = "{医院名}\n{日付時刻}\n予約番号\n{予約番号}\n{名前} 様\n{フリガナ}\n診察券番号　{診察券番号}";
     public string StaffTemplate { get; set; } = "スタッフにお渡し下さい\n番号\n{番号}\n{日付時刻}\n{名前} 様\n{フリガナ}\n診察券番号　{診察券番号}";
@@ -21,7 +22,7 @@ public sealed class PosPrintOptions
         bool number = line.Contains("{番号}") || line.Contains("{予約番号}");
         var result = styles.TryGetValue(index, out var saved) ? saved.Copy() :
             new PosLineStyle { FontSizePt = number ? 20 : PaperWidthMm == 58 ? 10 : 11, Bold = number };
-        result.Boxed ??= staff && line.Trim() == "スタッフにお渡し下さい";
+        result.Boxed ??= staff && line.Trim() is "スタッフにお渡し下さい" or "スタッフにお渡しください";
         if (staff && MatchStaffFontsToPatient)
         {
             string Key(string text) => text.Replace("{番号}", "{予約番号}").Replace("{マイナ氏名}", "{名前}").Replace("{マイナフリガナ}", "{フリガナ}").Replace("予約番号", "番号").Trim();

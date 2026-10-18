@@ -67,7 +67,7 @@ internal static class KioskAutomationTests
                         if (File.Exists(responsePath)) continue;
                         bool success = request.Action != "link" || linkSuccess;
                         var response = new ICallResponse(request.RequestId, success, success ? request.Action == "link" ? "linked" : "invoked" : "operation_failed",
-                            "synthetic", request.PatientId, request.ExpectedReceptionNo, request.ExpectedPatientName, Now, request.Fingerprint());
+                            "synthetic", request.PatientId, request.ReceptionNo ?? request.ExpectedReceptionNo, "試験患者", Now, request.Fingerprint());
                         File.WriteAllText(responsePath + ".tmp", JsonSerializer.Serialize(response, ICallFileClient.Json));
                         File.Move(responsePath + ".tmp", responsePath); Events.Add(request.Action);
                     }

@@ -6,20 +6,23 @@ public sealed record Reservation(string ReceptionNo, string PatientId, string Pa
     public int? WaitingOrder { get; init; }
     public bool HasAssignmentButton { get; init; }
     public bool CanAssignDummy { get; init; }
-    public bool IsUnassignedDummy => PatientId == "-" && (string.IsNullOrWhiteSpace(PatientName) || PatientName == "-") && HasAssignmentButton;
+    public bool IsUnassignedDummy => (string.IsNullOrWhiteSpace(PatientId) || PatientId == "-") &&
+        (string.IsNullOrWhiteSpace(PatientName) || PatientName == "-") && HasAssignmentButton;
     public bool HasMarkArrivedButton { get; init; }
     public bool HasLinkButton { get; init; }
     public string? LinkButtonName { get; init; }
     public bool HasPatientIdentity => !string.IsNullOrWhiteSpace(PatientId) && PatientId != "-" &&
         !string.IsNullOrWhiteSpace(PatientName) && PatientName != "-";
     public string OperationRestriction => string.IsNullOrWhiteSpace(PatientId) || PatientId == "-"
-        ? "患者IDなし・操作不可"
-        : string.IsNullOrWhiteSpace(PatientName) || PatientName == "-" ? "患者名なし・操作不可" : "";
+        ? (IsUnassignedDummy ? "患者未割当・連携不可" : "患者IDなし（受付番号で操作）")
+        : string.IsNullOrWhiteSpace(PatientName) || PatientName == "-" ? "患者名なし（受付番号で操作）" : "";
 }
 
 public sealed record BridgeRequest(string RequestId, string Action, string PatientId = "",
     string? ExpectedReceptionNo = null, string? ExpectedPatientName = null)
 {
+    [System.Text.Json.Serialization.JsonIgnore(Condition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull)]
+    public string? ReceptionNo { get; init; }
     [System.Text.Json.Serialization.JsonIgnore(Condition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull)]
     public string? PatientName { get; init; }
     [System.Text.Json.Serialization.JsonIgnore(Condition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull)]

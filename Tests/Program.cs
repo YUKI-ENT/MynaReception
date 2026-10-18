@@ -72,8 +72,8 @@ FlatTable(noCard).Children[19] = Cell("-");
 FlatTable(noCard).Children[27].Children.Clear();
 var noCardRow = RowParser.Parse(noCard, new())[1].Reservation;
 Check(noCardRow.HasMarkArrivedButton && !noCardRow.HasLinkButton &&
-    !noCardRow.CanMarkArrived && noCardRow.OperationRestriction == "患者IDなし・操作不可",
-    "named patient without card shows existing arrival button and explicit restriction");
+    noCardRow.CanMarkArrived && !noCardRow.CanLink && noCardRow.OperationRestriction == "患者IDなし（受付番号で操作）",
+    "named patient without card can arrive by reception number; absent link stays unavailable");
 var disabledArrival = Table(header, Row(Cell("38"), Cell("00013"), Cell("テスト患者"),
     new UiNode { Role = 29, Children = { new UiNode { ControlType = 50000, Name = "来院確認", Enabled = false } } }));
 var disabledRow = RowParser.Parse(disabledArrival, new())[0].Reservation;
@@ -114,8 +114,9 @@ if (args.Length >= 1)
         "provided diagnostic button presence matches captured elements without exposing patient data");
     if (expectedCount == 9)
         Check(provided.Count(r => !r.Reservation.HasPatientIdentity && r.Reservation.HasMarkArrivedButton) == 3 &&
-            provided.Where(r => !r.Reservation.HasPatientIdentity).All(r => !r.Reservation.CanMarkArrived && !r.Reservation.CanLink),
-            "provided diagnostic: three no-ID patients have arrival buttons, with operations blocked");
+            provided.Where(r => !r.Reservation.HasPatientIdentity).All(r => r.Reservation.CanMarkArrived == (r.Arrival?.Enabled == true) &&
+                r.Reservation.CanLink == (!r.Reservation.IsUnassignedDummy && r.Link?.Enabled == true)),
+            "provided diagnostic: no-ID patient operations follow available buttons by reception");
 }
 
 var patient = new Reservation("36", "00011", "テスト患者", "57760", true, true) { LinkButtonName = "", HasLinkButton = true };
@@ -127,14 +128,14 @@ using (var service = new ReservationService(() => fake))
     Check((await service.ExecuteAsync(Request("find"))).Reservation == patient, "find returns synchronized reservation");
     Check((await service.ExecuteAsync(Request("arrived"))).Code == "operations_disabled" && fake.Invocations == 0, "read-only default");
     service.OperationsEnabled = true;
-    Check((await service.ExecuteAsync(Request("arrived", "別の患者"))).Code == "identity_changed" && fake.Invocations == 0, "mismatch never invokes");
+    Check((await service.ExecuteAsync(Request("arrived") with { PatientId = "another-ID" })).Code == "identity_changed" && fake.Invocations == 0, "optional card mismatch never invokes");
     fake.Rows = [patient, patient];
-    Check((await service.ExecuteAsync(Request("arrived"))).Code == "ambiguous_patient", "duplicate patient never invokes");
+    Check((await service.ExecuteAsync(Request("arrived"))).Code == "ambiguous_reception", "duplicate reception never invokes");
     fake.Rows = [patient with { CanMarkArrived = false }];
     Check((await service.ExecuteAsync(Request("arrived"))).Code == "action_unavailable", "missing button is not reported as success");
     fake.Rows = [flatRows[0].Reservation];
-    Check((await service.ExecuteAsync(new("unassigned", "link", "-", "101", "-"))).Code == "not_found" && fake.Invocations == 0,
-        "service refuses placeholder patient identity");
+    Check((await service.ExecuteAsync(new("unassigned", "link", "-", "101", "-"))).Code == "action_unavailable" && fake.Invocations == 0,
+        "service refuses link on an unassigned dummy slot");
     fake.Rows = [patient];
     Check((await service.ExecuteAsync(Request("link"))).Code == "linked" && fake.Invocations == 1 && service.Snapshot.IsCurrent, "link confirms ON after single dispatch");
     Check((await service.ExecuteAsync(Request("link"))).Code == "already_linked" && fake.Invocations == 1, "already ON never toggles OFF");
@@ -239,6 +240,9 @@ using (var bridge = new FileBridge(share, state, Execute, _ => { }))
     catch (TimeoutException) { Check(File.Exists(Path.Combine(share, "request", "client-timeout.json")), "timeout preserves submitted request"); }
 }
 await AssignmentTests.Run(Check);
+await ArrivalTests.Run(Check);
+await LinkTests.Run(Check);
+IEAssignmentDomTests.Run(Check);
 await CandidateSearchTests.Run(Check);
 await LookupCacheTests.Run(Check);
 Console.WriteLine($"All {checks} checks passed. Synthetic test files: {testRoot}");
@@ -264,7 +268,7 @@ sealed class FakeAdapter : IReservationAdapter
         Invocations++;
         if (ThrowOnInvoke) throw new InvalidOperationException();
         if (action == "link")
-            Rows = [expected with { LinkButtonName = "〆", PatientName = ChangeIdentityOnInvoke ? "別患者" : expected.PatientName }];
+            Rows = [expected with { LinkButtonName = "〆", InternalId = ChangeIdentityOnInvoke ? "別予約" : expected.InternalId }];
         if (ThrowReadAfterInvoke) ThrowOnRead = true;
     }
     public string Diagnose() => "fake";

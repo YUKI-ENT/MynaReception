@@ -37,4 +37,22 @@ internal static class OperationalLog
         }
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException) { return null; }
     }
+
+    public static string? SaveAssignmentFailureTree(string text)
+    {
+        try
+        {
+            lock (Gate)
+            {
+                Directory.CreateDirectory(DirectoryPath);
+                // Keep one latest assignment failure even when the general
+                // layout-diagnostic quota has already been reached.
+                string path = Path.Combine(DirectoryPath, "assignment-last-failure.txt");
+                File.WriteAllText(path, $"requestId={RequestId}\r\n" +
+                    (text.Length > 2_000_000 ? text[..2_000_000] + "\r\n[truncated]" : text));
+                return path;
+            }
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException) { return null; }
+    }
 }

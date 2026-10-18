@@ -67,7 +67,7 @@ internal sealed class KioskConsoleForm : ReceptionAgentForm
         var commands = new FlowLayoutPanel { Dock = DockStyle.Fill, AutoSize = true };
         var save = new Button { Text = "案内設定を保存", AutoSize = true };
         var editFlow = new Button { Text = "質問・画面フローを編集", AutoSize = true };
-        var autoSettings = new Button { Text = "自動受付設定…", AutoSize = true };
+        var autoSettings = new Button { Text = "自動発券設定…", AutoSize = true };
         autoSettings.Click += (_, _) =>
         {
             using var dialog = new KioskAutomationSettingsForm(MainForm.DataDirectory);

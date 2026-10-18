@@ -14,17 +14,15 @@ internal sealed class KioskAutomationSettingsForm : ReceptionAgentForm
     }
     public KioskAutomationSettingsForm(string dataDirectory)
     {
-        Text = "Kiosk自動受付設定"; ClientSize = new(780, 640); StartPosition = FormStartPosition.CenterParent;
+        Text = "Kiosk自動発券設定"; ClientSize = new(780, 640); StartPosition = FormStartPosition.CenterParent;
         var settings = KioskOptions.Load(dataDirectory);
         var current = settings.Automation;
         var layout = new FlowLayoutPanel { Dock = DockStyle.Fill, AutoScroll = true, FlowDirection = FlowDirection.TopDown,
             WrapContents = false, Padding = new Padding(16) };
         layout.Controls.Add(new Label { AutoSize = true, MaximumSize = new(720, 0),
-            Text = "対象はKioskで本人・カルテ番号・予約を確認した当日の再診・予約ありです。発熱なし・予約ありの回答が一致し、フローが受付完了案内（Finish）へ進む場合に実行します。\r\n処理順は連携→来院確認→発券。有効な処理だけ実行し、途中で失敗した場合は職員確認へ回します。" });
-        var autoLink = new CheckBox { Text = "連携を自動実行（ReceptionAgent設定の連携方式を使用）", Checked = current.AutoLink, AutoSize = true };
-        var autoArrival = new CheckBox { Text = "iCallへ来院確認を自動要求", Checked = current.AutoArrival, AutoSize = true };
+            Text = "対象はKioskで本人・カルテ番号・予約を確認した当日の再診・予約ありです。発熱なし・予約ありの回答が一致し、フローが受付完了案内（Finish）へ進む場合に発券します。\r\n来院確認・連携はメイン画面上部のチェックで指定します。Kioskの回答前でも予約確定後に実行します。" });
         var autoPrint = new CheckBox { Text = "受付票を自動発券（患者用・スタッフ用を各1枚／80mm・58mm）", Checked = current.AutoPrint, AutoSize = true };
-        layout.Controls.AddRange([autoLink, autoArrival, autoPrint]);
+        layout.Controls.Add(autoPrint);
         layout.Controls.Add(new Label { Text = "自動発券プリンタ（POS-80Cなど）。用紙幅・文面はReceptionAgentのPOSプリンタ設定を使用。", AutoSize = true });
         var printer = new ComboBox { Width = 700, DropDownStyle = ComboBoxStyle.DropDownList, AccessibleName = "自動発券プリンタ", Enabled = current.AutoPrint };
         printer.Items.AddRange(PrinterSettings.InstalledPrinters.Cast<string>().ToArray());
@@ -64,7 +62,7 @@ internal sealed class KioskAutomationSettingsForm : ReceptionAgentForm
         grid.DataError += (_, e) => { e.ThrowException = false; };
         layout.Controls.Add(grid);
         layout.Controls.Add(new Label { AutoSize = true, MaximumSize = new(720, 0),
-            Text = "連携しない設定では自動連携をスキップします。iCall連携・来院確認にはiCallManagerの「実操作を有効化」が必要です。\r\n設定は新しいKiosk受付から適用。印刷結果が不明な場合は自動再発券せず、職員が印刷キューと用紙を確認します。" });
+            Text = "発券条件は来院確認・連携の条件には適用しません。来院確認・連携はメイン画面のチェックで別に指定します。\r\n発券設定は新しいKiosk受付から適用。印刷結果が不明な場合は自動再発券せず、職員が印刷キューと用紙を確認します。" });
         var result = new Label { AutoSize = true, MaximumSize = new(720, 0) };
         var buttons = new FlowLayoutPanel { AutoSize = true };
         var save = new Button { Text = "保存", AutoSize = true };
@@ -78,7 +76,7 @@ internal sealed class KioskAutomationSettingsForm : ReceptionAgentForm
                 if (rows.Select(p => p.Key).Distinct().Count() != rows.Length) throw new ArgumentException("同じ回答項目は1件だけ指定してください。");
                 // Preserve unrelated flow edits made since this dialog was opened.
                 var latest = KioskOptions.Load(dataDirectory);
-                latest.Automation = new KioskAutomationOptions { AutoLink = autoLink.Checked, AutoArrival = autoArrival.Checked,
+                latest.Automation = new KioskAutomationOptions { AutoLink = false, AutoArrival = false,
                     AutoPrint = autoPrint.Checked, PrinterName = printer.SelectedItem as string ?? "",
                     RequiredAnswers = rows.ToDictionary(p => p.Key, p => p.Value) };
                 latest.Save(dataDirectory); DialogResult = DialogResult.OK;

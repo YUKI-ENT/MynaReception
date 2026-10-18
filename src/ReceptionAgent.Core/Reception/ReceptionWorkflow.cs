@@ -3,7 +3,8 @@ using ReceptionAgent.ICall;
 
 namespace ReceptionAgent.Reception;
 
-public sealed class ReceptionWorkflow(CaptureStore store, Func<FaceIdentity, CancellationToken, Task<FaceLookupResult>> lookup, AgentSettings? settings = null)
+public sealed class ReceptionWorkflow(CaptureStore store, Func<FaceIdentity, CancellationToken, Task<FaceLookupResult>> lookup, AgentSettings? settings = null,
+    Func<AgentSettings>? currentSettings = null)
 {
     public async Task StepAsync(CaptureRecord record, CancellationToken token)
     {
@@ -103,17 +104,23 @@ public sealed class ReceptionWorkflow(CaptureStore store, Func<FaceIdentity, Can
                 case CaptureStage.PatientIdentified:
                     Prepare(record, "find", CaptureStage.FindWaiting); break;
                 case CaptureStage.ReservationFound:
-                    Complete(record);
+                    var config = currentSettings?.Invoke() ?? settings;
+                    record.AutoArrival = config?.AutoArrival == true;
+                    record.AutoLink = config?.AutoLink == true && config.ReceptionLinkMode != ReceptionLinkMode.None;
+                    record.AutomaticLinkMode = config?.ReceptionLinkMode ?? ReceptionLinkMode.None;
+                    record.AutomaticReceiptDirectory = config?.DynamicsReceiptDirectory ?? "";
+                    record.AutomaticOperationRequested = record.AutoArrival || record.AutoLink;
+                    AdvanceAutomatic(record);
                     break;
                 case CaptureStage.LinkReady:
-                    Complete(record);
+                    AdvanceAutomatic(record);
                     break;
                 case CaptureStage.FindWaiting:
                 case CaptureStage.CandidateFindWaiting:
                 case CaptureStage.ArrivedWaiting:
                 case CaptureStage.LinkWaiting:
                     var request = record.PendingRequest ?? throw new InvalidDataException("保存済み要求がありません。");
-                    if (request.Action is "arrived" or "link" && !record.ManualOperationRequested && record.KioskAutomaticSessionId.Length == 0)
+                    if (request.Action is "arrived" or "link" && !record.ManualOperationRequested && record.KioskAutomaticSessionId.Length == 0 && !record.AutomaticOperationRequested)
                         throw new InvalidDataException("旧設定による自動操作要求を停止しました。iCallManager側の処理結果を確認してください。");
                     if (request.Action is "arrived" or "link" && (record.ReconciliationIdentityMismatch ||
                         record.VerifiedPatientId.Length > 0 && record.VerifiedPatientId != request.PatientId))
@@ -153,7 +160,10 @@ public sealed class ReceptionWorkflow(CaptureStore store, Func<FaceIdentity, Can
                     {
                         if (request.Action == "link" ? response.Code is not ("linked" or "already_linked" or "invoked") : response.Code != "invoked")
                             throw new InvalidDataException("操作応答の内容を確認してください。");
-                        Complete(record);
+                        record.PendingRequest = null;
+                        record.ManualOperationRequested = false;
+                        AdvanceAutomatic(record);
+                        break;
                     }
                     record.PendingRequest = null; record.ManualOperationRequested = false;
                     break;
@@ -173,12 +183,55 @@ public sealed class ReceptionWorkflow(CaptureStore store, Func<FaceIdentity, Can
     }
     private static void Prepare(CaptureRecord record, string action, CaptureStage stage)
     {
-        record.PendingRequest = new("ra-" + record.Id + "-" + action, action, record.Lookup!.Selected!.PatientId,
-            action == "find" ? null : record.ReceptionNo, action == "find" ? null : record.ReservationPatientName);
+        record.PendingRequest = new("ra-" + record.Id + "-" + action, action, record.Lookup!.Selected!.PatientId)
+        {
+            // The known chart ID is an additional check; receptionNo identifies
+            // the booking. Never require exact spelling of a patient's name.
+            ReceptionNo = action is "arrived" or "link" ? record.ReceptionNo : null
+        };
         record.Stage = stage; record.Status = "iCall " + action + " 応答待ち";
     }
     private static void Complete(CaptureRecord record)
-    { record.Stage = CaptureStage.Completed; record.Status = "予約番号取得完了／来院確認・連携は手動操作"; }
+    { record.Stage = CaptureStage.Completed; record.Status = record.AutomaticOperationRequested ? "予約番号取得完了／指定の自動来院確認・連携処理完了" : "予約番号取得完了／来院確認・連携は手動操作"; }
+    private void AdvanceAutomatic(CaptureRecord record)
+    {
+        if (!record.AutomaticOperationRequested) { Complete(record); return; }
+        if (record.Conflict || record.GeneratedAt.Date != DateTime.Today || record.Lookup?.Selected is null ||
+            record.ReconciliationIdentityMismatch ||
+            record.VerifiedPatientId.Length > 0 && record.VerifiedPatientId != record.Lookup.Selected.PatientId ||
+            record.ReservationFoundAtReception != true || string.IsNullOrWhiteSpace(record.ReceptionNo) || string.IsNullOrWhiteSpace(record.ReservationPatientName))
+            throw new InvalidDataException("自動来院確認・連携には当日の患者ID・予約の一意な確認が必要です。");
+        bool Done(string action) => record.Responses.Any(r => r.RequestId == "ra-" + record.Id + "-" + action && r.Success &&
+            (action == "arrived" ? r.Code == "invoked" : r.Code is "linked" or "already_linked" or "invoked"));
+        if (record.AutoArrival && !Done("arrived"))
+        {
+            Prepare(record, "arrived", CaptureStage.ArrivedWaiting);
+            store.Log("automatic_operation_queued", record.Id, new { action = "arrived" });
+            return;
+        }
+        if (record.AutoLink && !Done("link") && record.DynamicsReceiptDirectory.Length == 0)
+        {
+            if (record.AutomaticLinkMode == ReceptionLinkMode.DirectOutput)
+            {
+                // Commit the plan before publishing to the durable, idempotent receipt outbox.
+                record.Stage = CaptureStage.LinkReady; store.Save(record);
+                string folder = AgentSettings.NormalizeRoot(record.AutomaticReceiptDirectory);
+                new DynamicsReceiptOutput().Enqueue(folder, record.Id, DynamicsReceiptOutput.Format(record.Lookup.Selected.PatientId,
+                    record.ReservationPatientName, record.GeneratedAt, DateTime.Now, record.ReceptionNo));
+                record.DynamicsReceiptDirectory = folder;
+                record.LinkResult = "ファイル出力受付済み（Dynamics取込結果は未確認）";
+                store.Log("automatic_operation_queued", record.Id, new { action = "direct_output" });
+            }
+            else if (record.AutomaticLinkMode == ReceptionLinkMode.ICall)
+            {
+                Prepare(record, "link", CaptureStage.LinkWaiting);
+                store.Log("automatic_operation_queued", record.Id, new { action = "link" });
+                return;
+            }
+            else throw new InvalidDataException("自動連携の方式を確認してください。");
+        }
+        Complete(record);
+    }
     private static void ApplyCandidateResponse(CaptureRecord record, ICallResponse response)
     {
         if (!response.Success || response.Candidates is null || response.Code is not ("candidates_found" or "no_candidates"))

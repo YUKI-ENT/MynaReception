@@ -4,10 +4,16 @@ using ReceptionAgent.ICall;
 namespace ReceptionAgent.Reception;
 
 public enum CaptureStage { Captured, PatientIdentified, FindWaiting, ReservationFound, ArrivedWaiting, LinkReady, LinkWaiting, Completed, NeedsReview, CandidateFindWaiting }
+public enum ReceptionOperationMode { Kiosk, Staff }
+public enum StaffReceiptState { None, Running, Completed, NeedsReview }
 
 public sealed class CaptureRecord
 {
     public string Id { get; set; } = Guid.NewGuid().ToString("N");
+    public ReceptionOperationMode OperationMode { get; set; } = ReceptionOperationMode.Kiosk;
+    public StaffReceiptState StaffReceiptState { get; set; }
+    public string StaffReceiptMessage { get; set; } = "未発券";
+    public DateTimeOffset? StaffReceiptSpooledAt { get; set; }
     public string FileName { get; set; } = "";
     public string ContentHash { get; set; } = "";
     public string SourcePath { get; set; } = "";
@@ -46,6 +52,11 @@ public sealed class CaptureRecord
     public bool MarkArrived { get; set; }
     public bool LinkReservation { get; set; }
     public bool ManualOperationRequested { get; set; }
+    public bool AutomaticOperationRequested { get; set; }
+    public bool AutoArrival { get; set; }
+    public bool AutoLink { get; set; }
+    public ReceptionLinkMode AutomaticLinkMode { get; set; }
+    public string AutomaticReceiptDirectory { get; set; } = "";
     public string KioskAutomaticSessionId { get; set; } = "";
     public ICallRequest? PendingRequest { get; set; }
     public string ReceptionNo { get; set; } = "";

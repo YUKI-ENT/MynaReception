@@ -31,6 +31,12 @@ public sealed class MainForm : ReceptionAgentForm
     private string? revision;
     private volatile bool monitoringAvailable;
     private bool MonitoringReady => monitoringAvailable && monitor?.FoldersAccessible == true;
+    private volatile ReceptionOperationMode operationMode;
+    private bool KioskReady => MonitoringReady && operationMode == ReceptionOperationMode.Kiosk;
+    private readonly ComboBox modeSelector = new() { DropDownStyle = ComboBoxStyle.DropDownList, Width = 310, AccessibleName = "受付モード" };
+    private readonly CheckBox autoArrival = new() { Text = "自動来院確認", AutoSize = true, AccessibleName = "自動来院確認" };
+    private readonly CheckBox autoLink = new() { Text = "自動連携", AutoSize = true, AccessibleName = "自動連携" };
+    private readonly StaffReceiptService staffReceipts;
     private readonly Kiosk.KioskSessions kioskSessions;
     private readonly Kiosk.KioskAutomationService kioskAutomation;
     private Web.KioskWebServer? kioskServer;
@@ -40,12 +46,23 @@ public sealed class MainForm : ReceptionAgentForm
     internal MainForm(string dataDirectory)
     {
         this.dataDirectory = dataDirectory;
+        operationMode = AgentSettings.Load(dataDirectory).OperationMode;
         store = new(Path.Combine(dataDirectory, "Reception"));
         registration = new(Path.Combine(dataDirectory, "SingleReferenceRegistration"), TimeSpan.FromSeconds(30));
-        kioskSessions = new Kiosk.KioskSessions(Path.Combine(dataDirectory, "Kiosk"), store, () => Kiosk.KioskOptions.Load(dataDirectory), () => MonitoringReady,
+        Kiosk.KioskOptions KioskConfiguration()
+        {
+            var config = Kiosk.KioskOptions.Load(dataDirectory);
+            // Arrival/link now belong to the main form's mode-independent switches.
+            config.Automation.AutoArrival = false; config.Automation.AutoLink = false;
+            return config;
+        }
+        kioskSessions = new Kiosk.KioskSessions(Path.Combine(dataDirectory, "Kiosk"), store, KioskConfiguration, () => KioskReady,
             receptionSettings: () => AgentSettings.Load(dataDirectory));
         kioskAutomation = new(kioskSessions, store, DynamicsFacePatientFinder.FindAsync,
-            (receipt, printer) => KioskReceiptPrinter.Print(receipt, printer, AgentSettings.Load(dataDirectory).PosPrint), () => MonitoringReady);
+            (receipt, printer) => KioskReceiptPrinter.Print(receipt, printer, AgentSettings.Load(dataDirectory).PosPrint), () => KioskReady);
+        staffReceipts = new(store, () => AgentSettings.Load(dataDirectory),
+            (receipt, options) => KioskReceiptPrinter.Print(receipt, options.PrinterName, options),
+            () => MonitoringReady && operationMode == ReceptionOperationMode.Staff, kioskSessions.HasPendingAutomation);
         Text = "ReceptionAgent — 受付ステータス"; StartPosition = FormStartPosition.CenterScreen;
         Size = new Size(1280, 720); MinimumSize = new Size(960, 550);
         var layout = new TableLayoutPanel { Dock = DockStyle.Fill, Padding = new Padding(16), ColumnCount = 1, RowCount = 5 };
@@ -55,6 +72,52 @@ public sealed class MainForm : ReceptionAgentForm
         var dateBar = new FlowLayoutPanel { Dock = DockStyle.Fill, AutoSize = true };
         dateBar.Controls.Add(new Label { AutoSize = true, Text = "表示日（XML生成日）", Margin = new Padding(3, 6, 8, 3) });
         dateBar.Controls.Add(displayDate);
+        dateBar.Controls.Add(new Label { Text = "受付モード", AutoSize = true, Margin = new Padding(16, 6, 8, 3) });
+        modeSelector.Items.AddRange(["Kioskあり（端末確認後に発券）", "Kioskなし（XML照会終了後に自動発券）"]);
+        modeSelector.SelectedIndex = (int)operationMode;
+        bool changingMode = false;
+        modeSelector.SelectedIndexChanged += (_, _) =>
+        {
+            if (changingMode || modeSelector.SelectedIndex < 0) return;
+            try
+            {
+                var config = AgentSettings.Load(dataDirectory);
+                config.OperationMode = (ReceptionOperationMode)modeSelector.SelectedIndex;
+                config.Save(dataDirectory); operationMode = config.OperationMode;
+                status.Text = "受付モードを保存しました。次に取得するXMLから適用します。Kioskなしの発券にはPOSプリンタ設定を有効にしてください。";
+            }
+            catch (Exception ex)
+            {
+                changingMode = true; modeSelector.SelectedIndex = (int)operationMode; changingMode = false;
+                MessageBox.Show(this, ex.Message, "受付モードを保存できません");
+            }
+        };
+        dateBar.Controls.Add(modeSelector);
+        bool updatingAutomatic = true;
+        var automaticSettings = AgentSettings.Load(dataDirectory);
+        autoArrival.Checked = automaticSettings.AutoArrival; autoLink.Checked = automaticSettings.AutoLink;
+        updatingAutomatic = false;
+        void SaveAutomatic()
+        {
+            if (updatingAutomatic) return;
+            try
+            {
+                var config = AgentSettings.Load(dataDirectory);
+                if (autoLink.Checked && config.ReceptionLinkMode == ReceptionLinkMode.None)
+                    throw new InvalidOperationException("設定で連携方式（iCall連携または直接出力）を選択してください。");
+                config.AutoArrival = autoArrival.Checked; config.AutoLink = autoLink.Checked; config.Save(dataDirectory);
+                status.Text = "自動操作設定を保存しました。これから患者ID・予約番号が確定する受付に適用します。Kioskモード共通です。";
+            }
+            catch (Exception ex)
+            {
+                updatingAutomatic = true;
+                var config = AgentSettings.Load(dataDirectory);
+                autoArrival.Checked = config.AutoArrival; autoLink.Checked = config.AutoLink;
+                updatingAutomatic = false; MessageBox.Show(this, ex.Message, "自動操作を設定できません");
+            }
+        }
+        autoArrival.CheckedChanged += (_, _) => SaveAutomatic(); autoLink.CheckedChanged += (_, _) => SaveAutomatic();
+        dateBar.Controls.Add(autoArrival); dateBar.Controls.Add(autoLink);
         displayDate.Format += (_, e) =>
         {
             if (e.ListItem is DateOnly date) e.Value = date.ToString("yyyy/MM/dd") + (date == DateOnly.FromDateTime(DateTime.Today) ? "（当日）" : "");
@@ -77,7 +140,8 @@ public sealed class MainForm : ReceptionAgentForm
             try
             {
                 var config = AgentSettings.Load(dataDirectory); config.ValidateMonitoring();
-                cancellation = new CancellationTokenSource(); monitor = new FaceCaptureMonitor(store, config, DynamicsFacePatientFinder.FindAsync, registration, DynamicsQualificationResultFinder.FindAsync);
+                cancellation = new CancellationTokenSource(); monitor = new FaceCaptureMonitor(store, config, DynamicsFacePatientFinder.FindAsync, registration, DynamicsQualificationResultFinder.FindAsync, () => operationMode,
+                    () => AgentSettings.Load(dataDirectory));
                 var activeMonitor = monitor; var token = cancellation.Token;
                 start.Enabled = settings.Enabled = false; stop.Enabled = true;
                 monitoringAvailable = true;
@@ -91,31 +155,16 @@ public sealed class MainForm : ReceptionAgentForm
             finally { monitoringAvailable = false; cancellation?.Dispose(); cancellation = null; monitor = null; if (!closing) { start.Enabled = settings.Enabled = true; stop.Enabled = false; Reload(); } }
         };
         stop.Click += (_, _) => { monitoringAvailable = false; cancellation?.Cancel(); stop.Enabled = false; status.Text = "停止しています…"; };
-        settings.Click += (_, _) => { try { using var dialog = new AgentSettingsForm(dataDirectory); dialog.ShowDialog(this); revision = null; Reload(); } catch (Exception ex) { MessageBox.Show(this, ex.Message); } };
+        settings.Click += (_, _) => { try { using var dialog = new AgentSettingsForm(dataDirectory); dialog.ShowDialog(this);
+            updatingAutomatic = true;
+            try { var config = AgentSettings.Load(dataDirectory); autoArrival.Checked = config.AutoArrival; autoLink.Checked = config.AutoLink; }
+            finally { updatingAutomatic = false; }
+            revision = null; Reload(); } catch (Exception ex) { MessageBox.Show(this, ex.Message); } };
         manual.Click += (_, _) => { using var dialog = new ManualLookupForm(); dialog.ShowDialog(this); };
         arrived.Click += async (_, _) => await (manualTask = RunSelectedAsync("arrived"));
         link.Click += async (_, _) => await (manualTask = RunSelectedAsync("link"));
         register.Click += async (_, _) => await (manualTask = RunSelectedAsync("register"));
-        posPrint.Click += (_, _) =>
-        {
-            try
-            {
-                if (SelectedRecord() is not { Conflict: false, ReconciliationIdentityMismatch: false, Lookup.Selected: not null } record) return;
-                var options = AgentSettings.Load(dataDirectory).PosPrint;
-                if (!options.Enabled) return;
-                var patient = record.Lookup.Selected;
-                if (record.VerifiedPatientId.Length > 0 && record.VerifiedPatientId != patient.PatientId)
-                    throw new InvalidOperationException("カルテ番号が一致しません。詳細を確認してください。");
-                if (string.IsNullOrWhiteSpace(record.ReceptionNo)) throw new InvalidOperationException("予約番号を確認してから発券してください。");
-                string name = !string.IsNullOrWhiteSpace(patient.Name) ? patient.Name :
-                    !string.IsNullOrWhiteSpace(record.ReservationPatientName) ? record.ReservationPatientName : record.XmlPatientName;
-                var receipt = new Kiosk.KioskReceipt(record.Id, patient.PatientId, name, patient.NameKana ?? "", record.ReceptionNo, record.CapturedAt).WithXmlIdentity(record);
-                if (string.IsNullOrWhiteSpace(receipt.Name)) throw new InvalidOperationException("氏名を確認してから発券してください。");
-                using var dialog = new KioskReceiptForm(receipt, false, options);
-                dialog.ShowDialog(this);
-            }
-            catch (Exception ex) { MessageBox.Show(this, ex.Message, "発券できません"); }
-        };
+        posPrint.Click += async (_, _) => await (manualTask = PrintSelectedAsync());
         grid.SelectionChanged += (_, _) => UpdateActions();
         var kiosk = new Button { Text = "Kioskコンソール", AutoSize = true };
         kiosk.Click += (_, _) => { try { using var dialog = new KioskConsoleForm(kioskSessions, () => kioskServer?.Url ?? ""); dialog.ShowDialog(this); } catch (Exception ex) { MessageBox.Show(this, ex.Message); } };
@@ -132,6 +181,7 @@ public sealed class MainForm : ReceptionAgentForm
             if (r.Lookup is not null) detail += string.Join("\r\n", r.Lookup.Candidates.Select(c => $"候補: {c.PatientId} / {c.Name} / {string.Join(",", c.RawChartNumbers)}"));
             var job = registration.Load(r.Id);
             if (job is not null) detail += $"\r\n照会番号登録: {job.State} / {job.Message}\r\n登録番号: {job.Target.ReferenceNumber}\r\n訂正前: {job.PreviousReferenceNumber} / 訂正回数: {job.CorrectionCount}\r\n要求: {job.RequestFileName}\r\n応答: {job.ResponseFileName}\r\n結果: {job.SegmentOfResult} / {job.ErrorCode} / {job.ErrorMessage} / {job.ProcessingResultStatus} / {job.ProcessingResultCode} / {job.ProcessingResultMessage}";
+            detail += $"\r\n取得時モード: {r.OperationMode}\r\n自動発券: {r.StaffReceiptState}\r\n発券結果: {r.StaffReceiptMessage}\r\n発券送信日時: {r.StaffReceiptSpooledAt}";
             MessageBox.Show(this, detail + timing, "取込結果");
         };
         refresh.Tick += async (_, _) => { Reload(); await (refreshTask = RefreshAsync()); };
@@ -157,7 +207,7 @@ public sealed class MainForm : ReceptionAgentForm
     }
     private async Task StartWebServerAsync()
     {
-        var server = new Web.KioskWebServer(kioskSessions, () => MonitoringReady);
+        var server = new Web.KioskWebServer(kioskSessions, () => KioskReady);
         try
         {
             var options = Kiosk.KioskOptions.Load(dataDirectory); options.Validate(); await server.StartAsync(options.Port);
@@ -224,6 +274,7 @@ public sealed class MainForm : ReceptionAgentForm
         {
             if (!busy)
             {
+                await Task.Run(() => staffReceipts.RunOnceAsync(token), token);
                 string? outputError = await Task.Run(() =>
                 {
                     string? error = null;
@@ -293,19 +344,22 @@ public sealed class MainForm : ReceptionAgentForm
             受付分類 = ReceptionClassification.Label(r.ReceptionCategory), 取得時間 = ReceptionClassification.FormatTime(r),
             保険者番号 = r.Face?.Insurance?.InsurerNumber, 記号 = r.Face?.Insurance?.Symbol, 番号 = r.Face?.Insurance?.Number, 枝番 = r.Face?.Insurance?.Branch,
             来院確認 = r.ArrivalResult, 連携 = r.LinkResult, 照会番号 = r.Face?.ReferenceNumber, 照会番号登録 = RegistrationStatus(r, jobs[r.Id]),
+            発券 = r.OperationMode == ReceptionOperationMode.Kiosk ? "Kiosk／手動" : r.StaffReceiptState switch
+            { StaffReceiptState.Running => "送信中", StaffReceiptState.Completed => "送信済み", StaffReceiptState.NeedsReview => "要確認", _ => "未発券" },
             状態 = r.Conflict ? "同名XMLの内容競合・停止" : r.Status, ファイル名 = r.FileName, ファイル作成日時 = r.FileCreatedAt?.ToLocalTime().ToString("yyyy/MM/dd HH:mm:ss"),
             再検証カルテ番号 = r.VerifiedPatientId, 再検証 = r.ReconciliationStatus,
             XML生成日時 = r.GeneratedAt.ToString("yyyy/MM/dd HH:mm:ss"), 取得日時 = r.CapturedAt.ToString("yyyy/MM/dd HH:mm:ss") }).ToList();
         foreach (string column in new[] { "ID", "内部カルテ番号", "保険者番号", "記号", "番号", "枝番", "ファイル名", "ファイル作成日時", "XML生成日時", "取得日時", "再検証カルテ番号", "再検証" })
             if (grid.Columns[column] is { } hidden) hidden.Visible = false;
         if (grid.Columns["患者ID"] is { } patientColumn) patientColumn.HeaderText = "カルテ番号";
-        string[] columnOrder = ["患者ID", "予約番号", "氏名", "フリガナ", "生年月日", "受付分類", "取得時間", "来院確認", "連携", "照会番号", "照会番号登録", "状態", "ファイル名", "ファイル作成日時", "XML生成日時", "取得日時", "再検証カルテ番号", "再検証"];
+        string[] columnOrder = ["患者ID", "予約番号", "氏名", "フリガナ", "生年月日", "受付分類", "取得時間", "来院確認", "連携", "照会番号", "照会番号登録", "発券", "状態", "ファイル名", "ファイル作成日時", "XML生成日時", "取得日時", "再検証カルテ番号", "再検証"];
         for (int i = 0; i < columnOrder.Length; i++)
             if (grid.Columns[columnOrder[i]] is { } column) column.DisplayIndex = i;
         foreach (DataGridViewRow row in grid.Rows)
         {
             if (row.Cells["ID"].Value is not string id || !jobs.TryGetValue(id, out var job)) continue;
             var record = rows.First(r => r.Id == id);
+            row.Cells["発券"].ToolTipText = record.StaffReceiptMessage;
             var classificationCell = row.Cells["受付分類"];
             classificationCell.Style.BackColor = record.ReceptionCategory switch
             {
@@ -343,8 +397,11 @@ public sealed class MainForm : ReceptionAgentForm
             (record.VerifiedPatientId.Length == 0 || record.VerifiedPatientId == record.Lookup.Selected.PatientId);
         bool reservation = identified && record!.GeneratedAt.Date == DateTime.Today &&
             !string.IsNullOrWhiteSpace(record.ReceptionNo) && !string.IsNullOrWhiteSpace(record.ReservationPatientName);
-        posPrint.Enabled = identified && !string.IsNullOrWhiteSpace(record!.ReceptionNo) &&
-            record.Stage != CaptureStage.NeedsReview && !kioskSessions.HasPendingAutomation(record.Id) && AgentSettings.Load(dataDirectory).PosPrint.Enabled;
+        modeSelector.Enabled = !busy;
+        posPrint.Enabled = !busy && record is not null && Kiosk.KioskReceipt.CanPrintStaff(record) &&
+            record.StaffReceiptState != StaffReceiptState.Running &&
+            !(operationMode == ReceptionOperationMode.Staff && record.OperationMode == ReceptionOperationMode.Staff && record.StaffReceiptState == StaffReceiptState.None) &&
+            !kioskSessions.HasPendingAutomation(record.Id) && AgentSettings.Load(dataDirectory).PosPrint.Enabled;
         bool CanOperate(string action) => reservation && !kioskSessions.HasPendingAutomation(record!.Id) &&
             (record!.PendingRequest?.Action == action && record.Stage is CaptureStage.ArrivedWaiting or CaptureStage.LinkWaiting ||
              record.PendingRequest is null && record.Stage == CaptureStage.Completed &&
@@ -361,6 +418,23 @@ public sealed class MainForm : ReceptionAgentForm
         var record = store.Get(id);
         record.Face = Face.FaceXmlParser.Parse(store.ReadXml(id), record.Encoding);
         return registration.RegisterAsync(record, AgentSettings.Load(dataDirectory).OqsRoot, CancellationToken.None);
+    }
+    private async Task PrintSelectedAsync()
+    {
+        if (closing || busy || SelectedRecord() is not { } record) return;
+        busy = true; UpdateActions();
+        try
+        {
+            var options = AgentSettings.Load(dataDirectory).PosPrint;
+            if (!options.Enabled) return;
+            if (record.StaffReceiptState == StaffReceiptState.Running || kioskSessions.HasPendingAutomation(record.Id))
+                throw new InvalidOperationException("自動発券・Kiosk受付が処理中です。");
+            using var dialog = new KioskReceiptForm(Kiosk.KioskReceipt.CreateStaff(record), false, options);
+            dialog.ShowDialog(this);
+            if (dialog.PrintSubmitted) await staffReceipts.RecordManualPrintAsync(record.Id, CancellationToken.None);
+        }
+        catch (Exception ex) { if (!closing) MessageBox.Show(this, ex.Message, "発券結果を確認してください"); }
+        finally { busy = false; if (!closing) { revision = null; Reload(); } }
     }
     private async Task RunSelectedAsync(string action)
     {

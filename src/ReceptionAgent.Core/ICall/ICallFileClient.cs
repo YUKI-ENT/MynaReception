@@ -5,8 +5,10 @@ using System.Text.Json;
 namespace ReceptionAgent.ICall;
 
 // Property order and serializer options are part of iCallManager's request fingerprint contract.
-public sealed record ICallRequest(string RequestId, string Action, string PatientId, string? ExpectedReceptionNo = null, string? ExpectedPatientName = null)
+public sealed record ICallRequest(string RequestId, string Action, string PatientId = "", string? ExpectedReceptionNo = null, string? ExpectedPatientName = null)
 {
+    [System.Text.Json.Serialization.JsonIgnore(Condition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull)]
+    public string? ReceptionNo { get; init; }
     [System.Text.Json.Serialization.JsonIgnore(Condition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull)]
     public string? PatientName { get; init; }
     [System.Text.Json.Serialization.JsonIgnore(Condition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull)]
@@ -63,6 +65,9 @@ public sealed class ICallFileClient
                 string? expectedPatientId = request.Action == "find_candidates" ? null : request.PatientId;
                 if (response.RequestId != request.RequestId || response.PatientId != expectedPatientId || response.RequestFingerprint != request.Fingerprint())
                     throw new InvalidDataException("iCallManagerの応答が要求と一致しません。");
+                if (response.Success && (request.Action is "arrived" or "link") &&
+                    response.ReceptionNo != (request.ReceptionNo ?? request.ExpectedReceptionNo))
+                    throw new InvalidDataException("iCallManagerの操作応答の受付番号が要求と一致しません。");
                 log?.Invoke("icall_response_received", new { request.RequestId, response.Code, response.CompletedAt, waitMs = watch.Elapsed.TotalMilliseconds });
                 return response;
             }

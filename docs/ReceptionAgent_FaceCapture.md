@@ -34,7 +34,7 @@ SQLiteはWALと同期書込みを使用します。患者情報を含むロー�
 
 患者IDを特定した後、iCallManagerと同じJSON契約で `find` 要求を出力します。ファイル名は `ra-<取込ID>-find.json`。患者IDは文字列です。要求は一時ファイルへ書き込んでからrenameします。
 
-応答はrequestId・patientId・requestFingerprintを照合します。予約番号取得後、設定がONなら `arrived` → `link` の順に送ります。操作要求には、findで得た予約番号と患者名も含め、iCallManager側で操作対象を再確認します。
+応答はrequestId・patientId・requestFingerprintを照合します。予約番号取得後、設定がONなら `arrived` → `link` の順に送ります。来院確認・連携の新規要求はfindで得た受付番号を `receptionNo` に指定し、取得済みカルテ番号は `patientId` として追加照合します。患者名・旧 `expectedReceptionNo` は新規操作要求の条件にしません。成功応答では受付番号の一致も検証します。手動・自動・Kiosk操作は共通の要求生成処理を使います。保存済みの未完了要求は元の内容と指紋を保持し、同じ要求IDの内容を変更しません。
 
 要求内容をSQLiteへ保存してからreqへ公開します。タイムアウト・再起動後も同じ要求ID／内容を再利用します。応答ファイルは削除しません。iCallManagerの要求ジャーナルと組み合わせて、同じ要求のボタン二重実行を防ぎます。新しく取り込むXMLにはその時点の設定、保存済みの処理には保存済みの送信先／操作設定を使います。
 

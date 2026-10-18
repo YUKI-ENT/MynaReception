@@ -11,6 +11,7 @@ internal static class PosPrintTests
             Directory.CreateDirectory(root);
             File.WriteAllText(Path.Combine(root, "settings.json"), "{}");
             var old = AgentSettings.Load(root);
+            check(old.PosPrint.SeparateJobsPerReceipt, "legacy POS settings send each receipt as a document for AfterDocument cutter drivers");
             check(!old.StartMonitoringOnLaunch && !old.PosPrint.Enabled && old.PosPrint.PaperWidthMm == 80 && old.PosPrint.PrinterName == "POS-80C", "legacy settings default to manual monitoring and disabled POS-80C / 80mm");
             var receipt = new KioskReceipt("test", "00123", "受付 太郎{番号}", "ウケツケ タロウ", "0037", DateTimeOffset.Now);
             string patient = old.PosPrint.Render(old.PosPrint.PatientTemplate, receipt);
@@ -30,6 +31,10 @@ internal static class PosPrintTests
             old.PosPrint.StaffStyles[0] = new() { FontName = "Yu Gothic", FontSizePt = 9, SpaceAfterMm = 0 };
             old.Save(root);
             var saved = AgentSettings.Load(root);
+            old.PosPrint.SeparateJobsPerReceipt = false; old.Save(root);
+            check(!AgentSettings.Load(root).PosPrint.SeparateJobsPerReceipt, "two-page job mode survives POS settings round trip");
+            old.PosPrint.SeparateJobsPerReceipt = true; old.Save(root);
+            check(AgentSettings.Load(root).PosPrint.SeparateJobsPerReceipt, "per-receipt document mode survives POS settings round trip");
             check(saved.PosPrint.PatientStyles[0].Alignment == PosTextAlignment.Left && saved.PosPrint.StaffStyles[0].Alignment == PosTextAlignment.Center, "per-copy alignment persists and existing style defaults to center");
             try { new PosLineStyle { Alignment = (PosTextAlignment)999 }.Validate(); check(false, "unknown alignment"); }
             catch (ArgumentException) { check(true, "unknown alignment rejected"); }

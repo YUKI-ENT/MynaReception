@@ -32,21 +32,20 @@ public sealed class ICallAutomation(AppSettings settings) : IReservationAdapter
             var root = capture.Own(automation.GetRootElement());
             var condition = capture.Own(automation.CreateTrueCondition());
             var windows = capture.Own(root.FindAll(TreeScope.TreeScope_Children, condition));
-            var matches = new List<IUIAutomationElement>();
+            var windowElements = new List<IUIAutomationElement>();
+            var windowInfo = new List<ICallWindow>();
             for (int i = 0; i < windows.Length; i++)
             {
                 var window = capture.Own(windows.GetElement(i));
-                if ((window.CurrentName ?? "").Contains(settings.WindowTitleContains, StringComparison.Ordinal)) matches.Add(window);
+                windowElements.Add(window);
+                windowInfo.Add(new(window.CurrentName ?? "", window.CurrentClassName ?? "", window.CurrentProcessId));
             }
-            if (matches.Count != 1)
-                throw new BridgeException("window_not_unique", $"iCall管理画面が{matches.Count}件あります。ログイン済み管理画面を1つ表示してください。");
             var walker = capture.Own(automation.ControlViewWalker);
             int count = 0;
             UiNode Visit(IUIAutomationElement element, int depth)
             {
                 if (++count > 20000 || depth > 60)
                     throw new BridgeException("tree_limit", "画面構造が大きすぎます。対象画面を確認してください。");
-                capture.ProcessIds.Add(element.CurrentProcessId);
                 int role = 0; string value = "";
                 if (element.GetCurrentPattern(UIA_PatternIds.UIA_LegacyIAccessiblePatternId) is IUIAutomationLegacyIAccessiblePattern legacy)
                 {
@@ -65,7 +64,7 @@ public sealed class ICallAutomation(AppSettings settings) : IReservationAdapter
                 }
                 var node = new UiNode
                 {
-                    Key = count, Name = (element.CurrentName ?? "").Trim(),
+                    Key = count, ProcessId = element.CurrentProcessId, Name = (element.CurrentName ?? "").Trim(),
                     AutomationId = element.CurrentAutomationId ?? "", HelpText = (element.CurrentHelpText ?? "").Trim(),
                     Framework = element.CurrentFrameworkId ?? "", ControlType = element.CurrentControlType,
                     Value = value, Role = role, Enabled = element.CurrentIsEnabled != 0
@@ -80,16 +79,29 @@ public sealed class ICallAutomation(AppSettings settings) : IReservationAdapter
                 }
                 return node;
             }
-            capture.Root = Visit(matches[0], 0);
+            // Some IE hosts expose a second generic top-level window with the
+            // management title and place the actual Trident dialog beneath it.
+            // Inspect relevant window contents before counting management pages.
+            var trees = new Dictionary<int, UiNode>();
+            for (int i = 0; i < windowInfo.Count; i++)
+            {
+                if (!windowInfo[i].Name.Contains(settings.WindowTitleContains, StringComparison.Ordinal) &&
+                    !ICallWindowSelector.IsDialog(windowInfo[i])) continue;
+                var tree = Visit(windowElements[i], 0);
+                trees.Add(i, tree);
+                windowInfo[i] = ICallWindowSelector.DescribeContent(windowInfo[i], tree, settings);
+            }
+            int mainIndex = ICallWindowSelector.MainWindowIndex(windowInfo, settings.WindowTitleContains);
+            capture.Root = trees[mainIndex];
+            capture.ProcessIds.UnionWith(new[] { capture.Root }.Concat(capture.Root.Descendants()).Select(n => n.ProcessId));
             // IE dialogs can be owned top-level windows rather than descendants of the main page.
             for (int i = 0; i < windows.Length; i++)
             {
-                var window = capture.Own(windows.GetElement(i));
-                if (capture.ProcessIds.Contains(window.CurrentProcessId) &&
-                    (window.CurrentName ?? "").Contains("ダミー割当", StringComparison.Ordinal) &&
-                    !(window.CurrentName ?? "").Contains(settings.WindowTitleContains, StringComparison.Ordinal) &&
-                    !capture.Root.Descendants().Any(n => n.ControlType == 50032 && n.Name == (window.CurrentName ?? "").Trim()))
-                    capture.Root.Children.Add(Visit(window, 0));
+                var window = windowElements[i];
+                if (i != mainIndex && ICallWindowSelector.IncludeDialog(windowInfo[i], capture.ProcessIds) &&
+                    !new[] { capture.Root }.Concat(capture.Root.Descendants()).Any(n =>
+                        automation.CompareElements(capture.Elements[n.Key], window) != 0))
+                    capture.Root.Children.Add(trees.TryGetValue(i, out var tree) ? tree : Visit(window, 0));
             }
             if (!capture.Root.Descendants().Any(n => n.Framework == settings.FrameworkId))
                 throw new BridgeException("framework_not_found", "対象画面にIEモードの要素が見つかりません。");
@@ -97,7 +109,7 @@ public sealed class ICallAutomation(AppSettings settings) : IReservationAdapter
         }
         catch (Exception ex)
         {
-            OperationalLog.Write("uia_tree_failed", new { error = ex.GetType().Name, code = (ex as BridgeException)?.Code, nodes = capture.Elements.Count });
+            OperationalLog.Write("uia_tree_failed", new { error = ex.GetType().Name, hresult = $"0x{ex.HResult:X8}", code = (ex as BridgeException)?.Code, nodes = capture.Elements.Count });
             capture.Dispose(); throw;
         }
     }
@@ -133,13 +145,13 @@ public sealed class ICallAutomation(AppSettings settings) : IReservationAdapter
     public void Invoke(Reservation expected, string action, Func<bool> mayInvoke)
     {
         if (action is not ("arrived" or "link")) throw new BridgeException("unsupported_action", "操作対象外です。");
-        if (!expected.HasPatientIdentity) throw new BridgeException("identity_missing", "患者未割当の予約は操作できません。");
+        if (action == "link" && expected.IsUnassignedDummy) throw new BridgeException("action_unavailable", "患者未割当のダミー枠は連携できません。");
         using var capture = ReadTree();
-        var rows = RowParser.Parse(capture.Root, settings).Where(r => r.Reservation.PatientId == expected.PatientId).ToArray();
-        if (rows.Length != 1 || rows[0].Reservation.PatientName != expected.PatientName ||
-            rows[0].Reservation.ReceptionNo != expected.ReceptionNo || rows[0].Reservation.InternalId != expected.InternalId)
-            throw new BridgeException("identity_changed", "操作直前に患者行が変わりました。再確認してください。");
-        var row = rows[0];
+        var parsed = RowParser.Parse(capture.Root, settings);
+        var current = ReceptionTarget.Verify(parsed.Select(r => r.Reservation).ToArray(), expected);
+        var row = parsed.Single(r => r.Reservation == current);
+        if (action == "link" && row.Reservation.IsUnassignedDummy)
+            throw new BridgeException("action_unavailable", "患者未割当のダミー枠は連携できません。");
         var buttonNode = action == "arrived" ? row.Arrival : row.Link;
         if (action == "link" && buttonNode?.Name == "〆") return;
         if (action == "link" && buttonNode?.Name != "")
@@ -158,6 +170,18 @@ public sealed class ICallAutomation(AppSettings settings) : IReservationAdapter
             .Where(n => n.ControlType == 50020 || n.Role == 29))
             if ((capture.Elements[node.Key].CurrentName ?? "").Trim() != node.Name)
                 throw new BridgeException("identity_changed", "患者行の内容が変わりました。再確認してください。");
+        if (action == "link")
+        {
+            bool attempted = false;
+            try { IEAssignmentDom.ExecuteLink(HtmlServer(capture, buttonNode.Key), expected, mayInvoke, () => attempted = true); }
+            catch (Exception ex) when (attempted)
+            {
+                string cause = ex is BridgeException bridge ? $"{bridge.Code}: {bridge.Message}" : $"{ex.GetType().Name} HRESULT=0x{ex.HResult:X8}";
+                OperationalLog.Write("link_dom_dispatch_failed", new { expected.ReceptionNo, expected.InternalId, cause });
+                throw new BridgeException("outcome_unknown", "連携イベント送信後にエラーが発生しました。再押下せず確認してください。 " + cause);
+            }
+            return;
+        }
         if (button.GetCurrentPattern(UIA_PatternIds.UIA_InvokePatternId) is not IUIAutomationInvokePattern invoke)
             throw new BridgeException("invoke_unavailable", "InvokePatternがありません。");
         capture.Own(invoke);
@@ -182,28 +206,65 @@ public sealed class ICallAutomation(AppSettings settings) : IReservationAdapter
             throw new BridgeException("invoke_unavailable", "ボタンのInvokePatternがありません。");
         capture.Own(invoke);
         if (!mayOperate()) throw new BridgeException("operations_disabled", "実操作が無効になりました。");
+        OperationalLog.Write("assignment_button_dispatch", new { button = node.Name, method = "InvokePattern.Invoke" });
         invoke.Invoke();
     }
 
     public Reservation AssignDummy(Reservation expected, string patientId, Func<bool> mayOperate) =>
         DummyAssignment.Run(new AssignmentSession(this), expected, patientId, mayOperate);
 
+    private nint AssignmentHtmlServer(Capture capture, UiNode scope)
+        => HtmlServer(capture, DummyAssignmentParser.Input(scope).Key);
+
+    private nint HtmlServer(Capture capture, int elementKey)
+    {
+        // Find the native HTML server through a verified input/button only.
+        // Never select a server from an arbitrary browser window.
+        var element = capture.Elements[elementKey];
+        var walker = capture.Own(automation.RawViewWalker);
+        for (int depth = 0; element is not null && depth < 60; depth++)
+        {
+            nint hwnd = element.CurrentNativeWindowHandle;
+            if (hwnd != 0 && IEAssignmentDom.NativeClassName(hwnd) == "Internet Explorer_Server")
+                return hwnd;
+            element = walker.GetParentElement(element);
+            if (element is not null) capture.Own(element);
+        }
+        throw new BridgeException("assignment_dom_unavailable", "割当入力欄のHTMLサーバーを取得できません。[dom-v1]");
+    }
+
     private sealed class AssignmentSession(ICallAutomation owner) : IDummyAssignmentSession
     {
+        public bool CommitAttempted { get; private set; }
         private readonly System.Diagnostics.Stopwatch clock = System.Diagnostics.Stopwatch.StartNew();
         private Reservation expected = null!;
-        private T Until<T>(Func<Capture, T> read)
+        private T Until<T>(string phase, Func<Capture, T> read, bool retryComReads = false)
         {
             BridgeException? last = null;
+            UiNode? lastTree = null;
             while (clock.Elapsed < TimeSpan.FromSeconds(30))
             {
-                try { using var capture = owner.ReadTree(); return read(capture); }
+                try
+                {
+                    T ReadCapture()
+                    {
+                        using var capture = owner.ReadTree();
+                        lastTree = capture.Root;
+                        return read(capture);
+                    }
+                    return retryComReads ? AssignmentConfirmation.Read(ReadCapture, phase) : ReadCapture();
+                }
                 catch (BridgeException ex) when (ex.Code is "assignment_popup_not_unique" or "assignment_input_not_unique" or
-                    "assignment_button_unavailable" or "patient_search_unverified" or "row_layout_unverified")
+                    "assignment_button_unavailable" or "patient_search_unverified" or "patient_search_empty" or
+                    "patient_input_pending" or "row_layout_unverified" or "assignment_dom_loading")
                 { last = ex; }
                 Thread.Sleep(200);
             }
-            throw new BridgeException("assignment_timeout", "患者割当の画面更新待ちがタイムアウトしました。" + last?.Message);
+            string? diagnostic = lastTree is null ? null : OperationalLog.SaveAssignmentFailureTree(
+                $"at={DateTimeOffset.Now:O} phase={phase} code={last?.Code}\r\n" + FormatTree(lastTree));
+            OperationalLog.Write("assignment_wait_timeout", new { phase, code = last?.Code, diagnostic });
+            string diagnosticInfo = diagnostic is null ? "" : $" 診断ファイル: {Path.GetFileName(diagnostic)}";
+            throw new BridgeException("assignment_timeout", $"患者割当の画面更新待ちがタイムアウトしました。[phase={phase}] " + last?.Message + diagnosticInfo);
         }
         public void Open(Reservation target, Func<bool> mayOperate)
         {
@@ -222,51 +283,62 @@ public sealed class ICallAutomation(AppSettings settings) : IReservationAdapter
         }
         public AssignmentPatient Search(string patientId, Func<bool> mayOperate)
         {
-            Until(capture =>
+            Until("patient_search_submit_dom", capture =>
             {
                 var scope = DummyAssignmentParser.Scope(capture.Root);
                 DummyAssignmentParser.VerifySlot(capture.Root, scope, expected);
                 DummyAssignmentParser.VerifySearchMode(scope);
-                var input = capture.Elements[DummyAssignmentParser.Input(scope).Key];
-                if (input.GetCurrentPattern(UIA_PatternIds.UIA_ValuePatternId) is not IUIAutomationValuePattern value ||
-                    value.CurrentIsReadOnly != 0)
-                    throw new BridgeException("value_unavailable", "診察券番号入力欄をValuePatternで編集できません。");
-                capture.Own(value);
-                if (!mayOperate()) throw new BridgeException("operations_disabled", "実操作が無効になりました。");
-                value.SetValue(patientId);
-                if (value.CurrentValue != patientId)
-                    throw new BridgeException("patient_input_mismatch", "入力した診察券番号を確認できません。");
-                InvokeButton(capture, DummyAssignmentParser.Button(scope, "患者検索"), mayOperate);
+                DummyAssignmentParser.Button(scope, "患者検索");
+                IEAssignmentDom.Execute(owner.AssignmentHtmlServer(capture, scope), expected.InternalId, patientId, "search", mayOperate);
                 return true;
             });
-            return Until(capture =>
+            return Until("patient_search_result", capture =>
             {
                 var scope = DummyAssignmentParser.Scope(capture.Root);
                 DummyAssignmentParser.VerifySlot(capture.Root, scope, expected);
-                if (DummyAssignmentParser.Input(scope).Value != patientId)
-                    throw new BridgeException("patient_input_mismatch", "検索中に診察券番号が変わりました。");
+                // The query may be cleared by the search navigation. Identity
+                // comes from the result fields, never from the query alone.
                 return DummyAssignmentParser.Patient(scope, patientId);
             });
         }
         public void Commit(AssignmentPatient patient, Func<bool> mayOperate)
         {
             using var capture = owner.ReadTree();
-            var scope = DummyAssignmentParser.Scope(capture.Root);
-            DummyAssignmentParser.VerifySlot(capture.Root, scope, expected);
-            var current = DummyAssignmentParser.Patient(scope, patient.PatientId);
-            if (current != patient || DummyAssignmentParser.Input(scope).Value != patient.PatientId)
-                throw new BridgeException("patient_search_unverified", "操作直前に検索結果が変わりました。");
-            var rows = RowParser.Parse(capture.Root, owner.settings);
-            var slot = rows.Where(r => r.Reservation.ReceptionNo == expected.ReceptionNo).ToArray();
-            if (slot.Length != 1 || !slot[0].Reservation.IsUnassignedDummy ||
-                slot[0].Reservation.InternalId != expected.InternalId || rows.Any(r => r.Reservation.PatientId == patient.PatientId))
-                throw new BridgeException("dummy_slot_changed", "枠または患者の予約状態が変わりました。");
-            VerifyCells(capture, slot[0]);
-            InvokeButton(capture, DummyAssignmentParser.Button(scope, "割当する"), mayOperate);
+            string phase = "commit_patient_verification";
+            try
+            {
+                var scope = DummyAssignmentParser.Scope(capture.Root);
+                DummyAssignmentParser.VerifySlot(capture.Root, scope, expected);
+                var current = DummyAssignmentParser.Patient(scope, patient.PatientId);
+                if (current != patient)
+                    throw new BridgeException("patient_search_unverified", "操作直前に検索結果が変わりました。");
+                phase = "commit_slot_verification";
+                var rows = RowParser.Parse(capture.Root, owner.settings);
+                var slot = rows.Where(r => r.Reservation.ReceptionNo == expected.ReceptionNo).ToArray();
+                if (slot.Length != 1 || !slot[0].Reservation.IsUnassignedDummy ||
+                    slot[0].Reservation.InternalId != expected.InternalId || rows.Any(r => r.Reservation.PatientId == patient.PatientId))
+                    throw new BridgeException("dummy_slot_changed", "枠または患者の予約状態が変わりました。");
+                VerifyCells(capture, slot[0]);
+                phase = "commit_button_dom";
+                DummyAssignmentParser.Button(scope, "割当する");
+                nint server = owner.AssignmentHtmlServer(capture, scope);
+                IEAssignmentDom.Execute(server, expected.InternalId, patient.PatientId, "commit", mayOperate, () => CommitAttempted = true);
+            }
+            catch (BridgeException ex)
+            {
+                string? diagnostic = OperationalLog.SaveAssignmentFailureTree(
+                    $"at={DateTimeOffset.Now:O} phase={phase} code={ex.Code} commitAttempted={CommitAttempted}\r\n" + FormatTree(capture.Root));
+                OperationalLog.Write("assignment_commit_failed", new { phase, ex.Code, ex.Message, CommitAttempted, diagnostic });
+                string file = diagnostic is null ? "" : $" 診断ファイル: {Path.GetFileName(diagnostic)}";
+                throw new BridgeException(ex.Code, $"[phase={phase} commitAttempted={CommitAttempted}] {ex.Message}{file}");
+            }
         }
         public Reservation AwaitAssigned(Reservation target, string patientId)
         {
-            return Until(capture =>
+            // Give confirmation its own budget after search and dispatch. This path
+            // contains no input or button operations, so a fresh capture is safe.
+            clock.Restart();
+            return Until("assigned_list", capture =>
             {
                 var rows = RowParser.Parse(capture.Root, owner.settings).Select(r => r.Reservation).ToArray();
                 var patients = rows.Where(r => r.PatientId == patientId).ToArray();
@@ -274,14 +346,48 @@ public sealed class ICallAutomation(AppSettings settings) : IReservationAdapter
                     patients[0].InternalId != target.InternalId)
                     throw new BridgeException("patient_search_unverified", "割当後の一覧を確認しています。");
                 return patients[0];
-            });
+            }, retryComReads: true);
         }
     }
 
     public string Diagnose()
     {
         using var capture = ReadTree();
-        return FormatTree(capture.Root);
+        string structure = FormatTree(capture.Root);
+        if (!DummyAssignmentParser.HasPopup(capture.Root))
+        {
+            try
+            {
+                var target = RowParser.Parse(capture.Root, settings).FirstOrDefault(r =>
+                    r.Link is not null && !r.Reservation.IsUnassignedDummy && r.Reservation.InternalId.Length > 0);
+                if (target is null) return "連携HTML診断の対象ボタンがありません。\r\n\r\n" + structure;
+                return $"診断対象: 受付番号={target.Reservation.ReceptionNo} 内部予約ID={target.Reservation.InternalId}\r\n" +
+                    IEAssignmentDom.InspectLink(HtmlServer(capture, target.Link!.Key), target.Reservation.InternalId) + "\r\n" + structure;
+            }
+            catch (Exception ex)
+            {
+                string cause = ex is BridgeException bridge ? bridge.Code + ": " + bridge.Message : ex.GetType().Name + $" HRESULT=0x{ex.HResult:X8}";
+                return "連携HTML診断を取得できませんでした。" + cause + "\r\n\r\n" + structure;
+            }
+        }
+        try
+        {
+            var scope = DummyAssignmentParser.Scope(capture.Root);
+            var matches = new List<Reservation>();
+            foreach (var row in RowParser.Parse(capture.Root, settings))
+            {
+                try { DummyAssignmentParser.VerifySlot(capture.Root, scope, row.Reservation); matches.Add(row.Reservation); }
+                catch (BridgeException ex) when (ex.Code == "dummy_slot_changed") { }
+            }
+            if (matches.Count != 1)
+                throw new BridgeException("assignment_popup_not_unique", "HTML診断の対象予約枠を一意に特定できません。");
+            return IEAssignmentDom.Inspect(AssignmentHtmlServer(capture, scope), matches[0].InternalId) + "\r\n" + structure;
+        }
+        catch (Exception ex)
+        {
+            string cause = ex is BridgeException bridge ? bridge.Code + ": " + bridge.Message : ex.GetType().Name + $" HRESULT=0x{ex.HResult:X8}";
+            return "割当HTML診断を取得できませんでした。" + cause + "\r\n\r\n" + structure;
+        }
     }
     private static string FormatTree(UiNode root)
     {

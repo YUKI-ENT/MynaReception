@@ -13,6 +13,7 @@ static class Program
     static void Check(bool condition, string message) { if (!condition) throw new Exception(message); Console.WriteLine("PASS: " + message); }
     static async Task Main()
     {
+        await RunAutomaticSwitches();
         await RunFlowEditor();
         await RunFormBuilder();
         await RunReceiptPreview();
@@ -27,6 +28,34 @@ static class Program
         await Run(true, false);
         await Run(false, true);
         Console.WriteLine("Windows lifecycle tests passed (isolated synthetic stores).");
+    }
+    static Task RunAutomaticSwitches()
+    {
+        var done = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var thread = new Thread(() =>
+        {
+            string root = Path.Combine(Path.GetTempPath(), "automatic-switch-ui-" + Guid.NewGuid().ToString("N"));
+            try
+            {
+                new AgentSettings().Save(root);
+                using (var form = (MainForm)Activator.CreateInstance(typeof(MainForm), BindingFlags.Instance | BindingFlags.NonPublic, null, [root], null)!)
+                {
+                    var arrival = (CheckBox)Field(form, "autoArrival")!;
+                    var link = (CheckBox)Field(form, "autoLink")!;
+                    Check(!arrival.Checked && !link.Checked, "main form automation switches start OFF");
+                    arrival.Checked = true; link.Checked = true;
+                    Check(AgentSettings.Load(root).AutoArrival && AgentSettings.Load(root).AutoLink, "main form switches save immediately without monitor restart");
+                    arrival.Checked = false;
+                    Check(!AgentSettings.Load(root).AutoArrival && AgentSettings.Load(root).AutoLink, "main automation switches save independently");
+                }
+                using var reopened = (MainForm)Activator.CreateInstance(typeof(MainForm), BindingFlags.Instance | BindingFlags.NonPublic, null, [root], null)!;
+                Check(!((CheckBox)Field(reopened, "autoArrival")!).Checked && ((CheckBox)Field(reopened, "autoLink")!).Checked, "main automation switches restore after reopening");
+                done.SetResult();
+            }
+            catch (Exception ex) { done.SetException(ex); }
+            finally { Microsoft.Data.Sqlite.SqliteConnection.ClearAllPools(); if (Directory.Exists(root)) Directory.Delete(root, true); }
+        });
+        thread.SetApartmentState(ApartmentState.STA); thread.Start(); return done.Task;
     }
     static Task RunReceiptPreview()
     {
@@ -75,8 +104,12 @@ static class Program
                 grid.Rows[0].Cells[2].Value = 17f; grid.Rows[0].Cells[3].Value = true; grid.Rows[0].Cells[4].Value = 4f;
                 grid.Rows[0].Cells[5].Value = PosTextAlignment.Right;
                 var staffGrid = grids.Single(g => g.AccessibleName == "スタッフ用の印刷項目");
+                var tabs = (TabControl)staffGrid.Parent!.Parent!;
+                tabs.SelectedTab = (TabPage)staffGrid.Parent; Application.DoEvents();
                 Check((bool)staffGrid.Rows[0].Cells[6].Value!, "staff handoff row starts with border enabled");
-                staffGrid.Rows[0].Cells[0].Value = "受付スタッフにお渡しください";
+                staffGrid.Rows[0].Cells[0].Value = "受付スタッフにお渡し下さい";
+                staffGrid.EndEdit();
+                tabs.SelectedTab = (TabPage)grid.Parent!; Application.DoEvents();
                 Check(original.PatientStyles.Count == 0, "style edits leave original settings untouched until apply");
                 var binding = (System.ComponentModel.IBindingList)grid.DataSource!;
                 var added = binding.AddNew()!;
@@ -177,9 +210,15 @@ static class Program
                     {
                         if (Field(form, "webStartTask") is Task webStart) await webStart;
                         Check((Field(form, "monitor") is not null) == autoStart, $"launch monitoring follows saved option {autoStart}");
+                        var receptionModeSelector = (ComboBox)Field(form, "modeSelector")!;
+                        Check(receptionModeSelector.SelectedIndex == 0 && receptionModeSelector.Items.Count == 2, "main form offers persisted Kiosk and staff reception modes");
+                        receptionModeSelector.SelectedIndex = 1;
+                        Check(AgentSettings.Load(root).OperationMode == ReceptionAgent.Reception.ReceptionOperationMode.Staff &&
+                            !(bool)typeof(MainForm).GetProperty("KioskReady", PrivateInstance)!.GetValue(form)!, "staff mode saves immediately and bypasses Kiosk availability");
+                        receptionModeSelector.SelectedIndex = 0;
                         var grid = (DataGridView)Field(form, "grid")!;
-                        Check(grid.Rows.Count == 1 && grid.Columns["氏名"].Visible && grid.Columns["状態"].Visible, "main list retains patient and status columns");
-                        Check(new[] { "ファイル名", "ファイル作成日時", "XML生成日時", "取得日時", "再検証カルテ番号", "再検証" }.All(c => !grid.Columns[c].Visible), "main list hides filename and diagnostic columns");
+                        Check(grid.Rows.Count == 1 && grid.Columns["氏名"]!.Visible && grid.Columns["状態"]!.Visible, "main list retains patient and status columns");
+                        Check(new[] { "ファイル名", "ファイル作成日時", "XML生成日時", "取得日時", "再検証カルテ番号", "再検証" }.All(c => !grid.Columns[c]!.Visible), "main list hides filename and diagnostic columns");
                         if (offlineOqs)
                         {
                             var monitor = (ReceptionAgent.Reception.FaceCaptureMonitor)Field(form, "monitor")!;
@@ -218,16 +257,15 @@ static class Program
                 IEnumerable<Control> Descendants(Control control) => control.Controls.Cast<Control>().SelectMany(c => new[] { c }.Concat(Descendants(c)));
                 var controls = Descendants(form).ToArray();
                 var switches = controls.OfType<CheckBox>().ToArray();
-                Check(switches.Length == 3 && switches.All(c => !c.Checked), "automatic settings UI exposes three independent OFF switches");
+                Check(switches.Length == 1 && !switches[0].Checked, "Kiosk settings expose auto-print only; arrival/link belong to main form");
                 var printer = controls.OfType<ComboBox>().Single();
                 Check(!printer.Enabled, "printer selection disabled when auto-print OFF");
                 switches.Single(c => c.Text.Contains("自動発券")).Checked = true; Application.DoEvents();
                 Check(printer.Enabled, "58mm auto-print enables printer selection");
                 switches.Single(c => c.Text.Contains("自動発券")).Checked = false;
-                switches.Single(c => c.Text.Contains("連携を自動")).Checked = true;
                 controls.OfType<Button>().Single(c => c.Text == "保存").PerformClick(); Application.DoEvents();
-                Check(KioskOptions.Load(root).Automation.AutoLink && !KioskOptions.Load(root).Automation.AutoPrint,
-                    "automation form saves switches without sending to a printer");
+                Check(!KioskOptions.Load(root).Automation.AutoLink && !KioskOptions.Load(root).Automation.AutoArrival && !KioskOptions.Load(root).Automation.AutoPrint,
+                    "Kiosk settings save without enabling legacy arrival/link or sending to a printer");
                 done.SetResult();
             }
             catch (Exception ex) { done.SetException(ex); }

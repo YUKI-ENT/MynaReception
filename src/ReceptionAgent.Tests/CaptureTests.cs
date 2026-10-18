@@ -42,7 +42,8 @@ internal static class CaptureTests
         check(record.Stage == CaptureStage.FindWaiting && !Directory.GetFiles(settings.ICallRequestDirectory).Any(), "request committed before external publication");
         record = restoredStore.List().Single();
         var request = record.PendingRequest!;
-        var managerRequest = new iCallManager.Core.BridgeRequest(request.RequestId, request.Action, request.PatientId, request.ExpectedReceptionNo, request.ExpectedPatientName);
+        var managerRequest = new iCallManager.Core.BridgeRequest(request.RequestId, request.Action, request.PatientId, request.ExpectedReceptionNo, request.ExpectedPatientName)
+        { ReceptionNo = request.ReceptionNo };
         check(request.Fingerprint() == managerRequest.Fingerprint(), "fingerprint identical to actual iCallManager contract");
         await workflow.StepAsync(record, default);
         check(record.Stage == CaptureStage.FindWaiting && record.PendingRequest!.RequestId == request.RequestId && File.Exists(Path.Combine(settings.ICallRequestDirectory, request.RequestId + ".json")), "timeout retains request ID for restart");
@@ -89,7 +90,9 @@ internal static class CaptureTests
         check(second.Stage == CaptureStage.Completed && second.Responses.Count == 1, "legacy flags do not automatically operate reservations");
         await workflow.QueueManualAsync(second.Id, "arrived", default);
         second = store.Get(second.Id);
-        check(second.PendingRequest?.ExpectedReceptionNo == "7" && second.PendingRequest.ExpectedPatientName == "試験太郎", "manual arrival binds expected reservation");
+        check(second.PendingRequest?.ReceptionNo == "7" && second.PendingRequest.PatientId == "11" &&
+            second.PendingRequest.ExpectedReceptionNo is null && second.PendingRequest.ExpectedPatientName is null,
+            "manual arrival targets reception with optional chart check and no name constraint");
         await Reply(second); await workflow.StepByIdAsync(second.Id, default);
         second = store.Get(second.Id);
         check(second.Stage == CaptureStage.Completed && second.LinkResult == "未要求", "manual arrival does not invoke link");
@@ -97,6 +100,8 @@ internal static class CaptureTests
         catch (InvalidDataException) { check(true, "completed arrival cannot be dispatched twice"); }
         await workflow.QueueManualAsync(second.Id, "link", default);
         second = store.Get(second.Id);
+        check(second.PendingRequest?.ReceptionNo == "7" && second.PendingRequest.ExpectedPatientName is null &&
+            second.PendingRequest.ExpectedReceptionNo is null, "manual link uses reception number without legacy name constraint");
         await Reply(second); await workflow.StepByIdAsync(second.Id, default); second = store.Get(second.Id);
         check(second.Responses.Select(r => r.Code).SequenceEqual(new[] { "found", "invoked", "linked" }), "manual arrival and link results persist independently");
         check(second.ArrivalResult.StartsWith("invoked") && second.LinkResult.StartsWith("linked"), "link ON confirmation distinguished from arrival dispatch");

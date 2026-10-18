@@ -28,7 +28,7 @@ internal static class ReceptionClassificationTests
             var request = record.PendingRequest!;
             var managerRequest = new iCallManager.Core.BridgeRequest(request.RequestId, request.Action, request.PatientId,
                 request.ExpectedReceptionNo, request.ExpectedPatientName)
-            { PatientName = request.PatientName, NameKana = request.NameKana, GivenName = request.GivenName, Birthdate = request.Birthdate };
+            { ReceptionNo = request.ReceptionNo, PatientName = request.PatientName, NameKana = request.NameKana, GivenName = request.GivenName, Birthdate = request.Birthdate };
             check(managerRequest.Fingerprint() == request.Fingerprint(), "candidate request fingerprint matches manager including optional search keys");
             var response = hasChart ? new ICallResponse(request.RequestId, hasReservation, hasReservation ? "found" : "not_found", "test", "11",
                 hasReservation ? "7" : null, hasReservation ? "試験患者" : null, DateTimeOffset.Now, request.Fingerprint()) :

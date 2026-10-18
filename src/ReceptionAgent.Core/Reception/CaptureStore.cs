@@ -38,6 +38,7 @@ public sealed class CaptureStore
         using var command = connection.CreateCommand(); command.CommandText = "PRAGMA synchronous=FULL;"; command.ExecuteNonQuery(); return connection;
     }
     public IDisposable AcquireMonitorLease() => new FileStream(Path.Combine(directory, "monitor.lock"), FileMode.OpenOrCreate, FileAccess.ReadWrite, FileShare.None);
+    public IDisposable AcquireStaffReceiptLease() => new FileStream(Path.Combine(directory, "staff-receipt.lock"), FileMode.OpenOrCreate, FileAccess.ReadWrite, FileShare.None);
     public bool Capture(CaptureRecord record, byte[] xml)
     {
         using var connection = Open(); using var transaction = connection.BeginTransaction();

@@ -10,6 +10,7 @@ internal sealed class KioskReceiptForm : ReceptionAgentForm
     private readonly bool sample;
     private readonly Bitmap preview;
     private readonly PosPrintOptions options;
+    public bool PrintSubmitted { get; private set; }
     public KioskReceiptForm(KioskReceipt receipt, bool sample = false) : this(receipt, sample, AgentSettings.Load(MainForm.DataDirectory).PosPrint) { }
     public KioskReceiptForm(KioskReceipt receipt, bool sample, PosPrintOptions options)
     {
@@ -56,11 +57,12 @@ internal sealed class KioskReceiptForm : ReceptionAgentForm
             document.PrinterSettings.PrinterName = options.PrinterName;
             using var dialog = new PrintDialog { Document = document, UseEXDialog = true, AllowSomePages = false, AllowSelection = false };
             if (dialog.ShowDialog(this) != DialogResult.OK) return;
-            KioskReceiptPrinter.Print(receipt, document.PrinterSettings.PrinterName, options, sample);
+            KioskReceiptPrinter.Print(receipt, document.PrinterSettings, document.DefaultPageSettings, options, sample);
+            PrintSubmitted = true;
             Directory.CreateDirectory(Path.Combine(MainForm.DataDirectory, "Logs"));
             File.AppendAllText(Path.Combine(MainForm.DataDirectory, "Logs", $"receipt-{DateTime.Now:yyyyMMdd}.jsonl"),
                 JsonSerializer.Serialize(new { at = DateTimeOffset.Now, eventName = "receipt_spooled", sessionId = receipt.SessionId,
-                    printer = document.PrinterSettings.PrinterName, paperWidthMm = options.PaperWidthMm, copies = 2, sample }) + Environment.NewLine);
+                    printer = document.PrinterSettings.PrinterName, paperWidthMm = options.PaperWidthMm, copies = 2, separateJobs = options.SeparateJobsPerReceipt, sample }) + Environment.NewLine);
             MessageBox.Show(this, "印刷キューへ送信しました。実際の印刷・各用紙のカットはプリンタで確認してください。");
         }
         catch (Exception ex) { MessageBox.Show(this, "印刷結果が不明な場合は、印刷キューと用紙を確認してから再操作してください。\n" + ex.Message, "印刷を確認してください"); }

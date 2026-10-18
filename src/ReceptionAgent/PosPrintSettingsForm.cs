@@ -23,9 +23,9 @@ internal sealed class PosPrintSettingsForm : ReceptionAgentForm
     {
         Options = current;
         Text = "POSプリンタ・印刷文面"; ClientSize = new(1000, 760); MinimumSize = new(860, 650); StartPosition = FormStartPosition.CenterParent;
-        var layout = new TableLayoutPanel { Dock = DockStyle.Fill, Padding = new(16), ColumnCount = 1, RowCount = 12 };
+        var layout = new TableLayoutPanel { Dock = DockStyle.Fill, Padding = new(16), ColumnCount = 1, RowCount = 13 };
         layout.ColumnStyles.Add(new(SizeType.Percent, 100));
-        for (int i = 0; i < 12; i++) layout.RowStyles.Add(new(i == 9 ? SizeType.Percent : SizeType.AutoSize, i == 9 ? 100 : 0));
+        for (int i = 0; i < 13; i++) layout.RowStyles.Add(new(i == 10 ? SizeType.Percent : SizeType.AutoSize, i == 10 ? 100 : 0));
         void Add(Control c) { c.Anchor = AnchorStyles.Left | AnchorStyles.Right; layout.Controls.Add(c); }
         var enabled = new CheckBox { Text = "POSプリンタ出力を有効にする（患者用・スタッフ用を各1枚）", AutoSize = true, Checked = current.Enabled }; Add(enabled);
         Add(new Label { Text = "Windowsプリンタ名（既定のプリンタではなく、ここで指定したプリンタを使用）", AutoSize = true });
@@ -33,6 +33,7 @@ internal sealed class PosPrintSettingsForm : ReceptionAgentForm
         printer.Items.AddRange(PrinterSettings.InstalledPrinters.Cast<string>().ToArray()); Add(printer);
         Add(new Label { Text = "用紙幅（プリンタ側の用紙幅設定も合わせてください）", AutoSize = true });
         var width = new ComboBox { DropDownStyle = ComboBoxStyle.DropDownList }; width.Items.AddRange(["80mm", "58mm"]); width.SelectedIndex = current.PaperWidthMm == 58 ? 1 : 0; Add(width);
+        var separateJobs = new CheckBox { Text = "1枚ずつ別の印刷ジョブで送る（文書終了時カット用・ドライバの自動カットもONにしてください）", AutoSize = true, Checked = current.SeparateJobsPerReceipt }; Add(separateJobs);
         Add(new Label { Text = "医院名", AutoSize = true }); var clinic = new TextBox { Text = current.ClinicName }; Add(clinic);
         Add(new Label { Text = "各行の文面・フォント・サイズ・太字・余白・配置を編集できます。最下行で追加、行選択＋Deleteで削除。\n差し込み項目: {医院名} {日付時刻} {予約番号} {番号} {名前} {フリガナ} {診察券番号}\n{名前}・{フリガナ}はXML優先。XML由来を指定する場合: {マイナ氏名} {マイナフリガナ}\nサイズはpt、余白はmm。折り返し内の行間はフォントに従います。{番号}は予約番号です。", AutoSize = true });
         var matchFonts = new CheckBox { Text = "スタッフ用のフォント・文字サイズを患者用に合わせる", AutoSize = true, Checked = current.MatchStaffFontsToPatient }; Add(matchFonts);
@@ -83,6 +84,7 @@ internal sealed class PosPrintSettingsForm : ReceptionAgentForm
                 return;
             }
             if (!patient.Grid.EndEdit() || !staff.Grid.EndEdit()) return;
+            BindingContext?[patient.Lines]?.EndCurrentEdit(); BindingContext?[staff.Lines]?.EndCurrentEdit();
             var draft = new PosPrintOptions { PaperWidthMm = width.SelectedIndex == 1 ? 58 : 80,
                 PatientTemplate = string.Join("\n", patient.Lines.Select(l => l.Text)),
                 PatientStyles = patient.Lines.Select((l, i) => (i, style: l.Style())).ToDictionary(p => p.i, p => p.style) };
@@ -97,14 +99,14 @@ internal sealed class PosPrintSettingsForm : ReceptionAgentForm
         matchFonts.CheckedChanged += (_, _) => MatchFonts();
         tabs.SelectedIndexChanged += (_, _) => MatchFonts();
         MatchFonts();
-        Add(new Label { Text = "スタッフ案内も「文面」欄で編集できます。「枠囲い」をONにすれば、変更した文言も枠で囲みます。\n文字サイズ: 6～48pt／余白: 0～20mm。各用紙を別ページで送信。ドライバでページごとの自動カットを有効にしてください。", AutoSize = true });
+        Add(new Label { Text = "スタッフ案内も「文面」欄で編集できます。「枠囲い」をONにすれば、変更した文言も枠で囲みます。\n文字サイズ: 6～48pt／余白: 0～20mm。カットはWindowsプリンタの印刷設定で有効にしてください。", AutoSize = true });
         PosPrintOptions Read()
         {
             MatchFonts();
             if (!patient.Grid.EndEdit() || !staff.Grid.EndEdit()) throw new ArgumentException("編集中の値を確認してください。");
             BindingContext?[patient.Lines]?.EndCurrentEdit(); BindingContext?[staff.Lines]?.EndCurrentEdit();
             return new() { Enabled = enabled.Checked, PrinterName = printer.Text.Trim(), PaperWidthMm = width.SelectedIndex == 1 ? 58 : 80,
-                ClinicName = clinic.Text, MatchStaffFontsToPatient = matchFonts.Checked, PatientTemplate = string.Join("\n", patient.Lines.Select(l => l.Text)), StaffTemplate = string.Join("\n", staff.Lines.Select(l => l.Text)),
+                ClinicName = clinic.Text, SeparateJobsPerReceipt = separateJobs.Checked, MatchStaffFontsToPatient = matchFonts.Checked, PatientTemplate = string.Join("\n", patient.Lines.Select(l => l.Text)), StaffTemplate = string.Join("\n", staff.Lines.Select(l => l.Text)),
                 PatientStyles = patient.Lines.Select((l, i) => (i, style: l.Style())).ToDictionary(p => p.i, p => p.style),
                 StaffStyles = staff.Lines.Select((l, i) => (i, style: l.Style())).ToDictionary(p => p.i, p => p.style) };
         }

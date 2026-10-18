@@ -87,7 +87,7 @@ internal static class LookupCacheTests
         await service.SyncAsync();
         service.OperationsEnabled = true;
         adapter.Rows = [patient with { ReceptionNo = "99" }];
-        check((await service.ExecuteAsync(new("cache-arrived", "arrived", "00011", "36", "テスト患者"))).Code == "identity_changed" && adapter.Invocations == 0,
+        check((await service.ExecuteAsync(new("cache-arrived", "arrived", "00011", "36", "テスト患者"))).Code == "not_found" && adapter.Invocations == 0,
             "real operation revalidates changed browser identity instead of cache");
         using var cancelled = new CancellationTokenSource();
         cancelled.Cancel();

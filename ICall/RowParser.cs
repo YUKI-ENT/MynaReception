@@ -6,6 +6,7 @@ namespace iCallManager.ICall;
 public sealed class UiNode
 {
     public int Key { get; init; }
+    public int ProcessId { get; init; }
     public string Name { get; init; } = "";
     public string AutomationId { get; init; } = "";
     public string Value { get; init; } = "";
@@ -87,7 +88,7 @@ public static class RowParser
                 if (headerIndexes.Contains(i) || cells[i].Count > 0 && cells[i].All(c => c.Role == 25)) continue;
                 if (cells[i].Count <= Math.Max(reception, Math.Max(patient, name))) { invalid = true; continue; }
                 string no = CellText(cells[i][reception]), id = CellText(cells[i][patient]), patientName = CellText(cells[i][name]);
-                if (!Regex.IsMatch(no, @"^\d+$") || string.IsNullOrWhiteSpace(id) || string.IsNullOrWhiteSpace(patientName))
+                if (!Regex.IsMatch(no, @"^\d+$"))
                 { invalid = true; continue; }
                 hasData = true;
                 var buttons = rows[i].Descendants().Where(n => n.ControlType == 50000).ToList();
@@ -101,9 +102,10 @@ public static class RowParser
                 // HelpText, when exposed, must agree with the name cell.
                 if (new[] { arrival, link }.Any(b => b != null && b.HelpText.Length > 0 && Normalize(b.HelpText) != Normalize(patientName)))
                 { invalid = true; continue; }
-                bool identified = id != "-" && patientName != "-";
+                bool dummy = assignment is not null && (string.IsNullOrWhiteSpace(id) || id == "-") &&
+                    (string.IsNullOrWhiteSpace(patientName) || patientName == "-");
                 parsed.Add(new(new(no, id, patientName, link?.AutomationId[3..] ?? "",
-                    identified && arrival?.Enabled == true, identified && link?.Enabled == true)
+                    arrival?.Enabled == true, !dummy && link?.Enabled == true)
                     { HasMarkArrivedButton = arrival != null, HasLinkButton = link != null, LinkButtonName = link?.Name,
                       HasAssignmentButton = assignment != null, CanAssignDummy = id == "-" && patientName == "-" && assignment?.Enabled == true,
                       WaitingOrder = waitingOrderColumn >= 0 && int.TryParse(CellText(cells[i][waitingOrderColumn]), out int order) ? order : null },
@@ -189,9 +191,10 @@ public static class RowParser
                 throw FlatLayoutError("同じ行の連携・案内ボタンの内部IDが一致しません。");
             if (new[] { arrival, link, guide }.Any(b => b != null && b.HelpText.Length > 0 && Normalize(b.HelpText) != Normalize(name)))
                 throw FlatLayoutError("氏名セルとボタンの患者名が一致しません。");
-            bool identified = !string.IsNullOrWhiteSpace(id) && id != "-" && !string.IsNullOrWhiteSpace(name) && name != "-";
-            result.Add(new(new(no, id, name, internalId, identified && arrival?.Enabled == true,
-                identified && link?.Enabled == true)
+            bool dummy = assignment is not null && (string.IsNullOrWhiteSpace(id) || id == "-") &&
+                (string.IsNullOrWhiteSpace(name) || name == "-");
+            result.Add(new(new(no, id, name, internalId, arrival?.Enabled == true,
+                !dummy && link?.Enabled == true)
                 { HasMarkArrivedButton = arrival != null, HasLinkButton = link != null, LinkButtonName = link?.Name,
                   HasAssignmentButton = assignment != null, CanAssignDummy = id == "-" && (name == "-" || string.IsNullOrWhiteSpace(name)) && assignment?.Enabled == true,
                   WaitingOrder = waitingOrder }, table, cells, arrival, link) { Assignment = assignment });

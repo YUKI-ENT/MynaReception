@@ -23,7 +23,7 @@ UIAは専用MTAスレッドで直列に実行します。同期と実操作が�
 
 提供された実画面の診断データに対応しています。iCallのIE画面では行要素が省略され、見出し表と `tableList` のデータ表が分離されていました。見出し14セル（最後の「機能選択」がデータ側の3セルに対応）、患者1件あたり16セルの構造を検証して解析します。「受付番号」「診察券」「おなまえ」の対応を確認し、数値が入ったメモ欄を患者IDとして扱いません。
 
-患者未割当の行も一覧表示しますが、来院確認・連携は無効にし、APIの患者検索対象からも除外します。ボタンがない行も列挙します。見出し・列数・受付番号リンクの位置・操作ボタンの列・連携と案内の内部IDが一致しない場合は操作せず停止します。案内ボタンは行の照合に使うだけで、実行しません。
+診察券番号・患者名が未登録の行も一覧表示します。診察券番号によるfindは患者情報が揃った行だけを対象にしますが、来院確認・連携は受付番号で特定し、ボタンと内部予約IDを確認できれば実行できます。患者未割当のダミー枠は連携対象から除外し、来院確認ボタンがなければ来院確認もしません。ボタンがない行も列挙します。見出し・列数・受付番号リンクの位置・操作ボタンの列・連携と案内の内部IDが一致しない場合は操作せず停止します。案内ボタンは行の照合に使うだけで、実行しません。
 
 MSAAのTable / Row / Cell、またはセルを持つUIA DataItemの構造も引き続き対応しています。提供された診断データによる読取の再現テストは完了していますが、実ボタン操作後の画面変化は実機での確認が必要です。
 
@@ -100,25 +100,31 @@ MSAAのTable / Row / Cell、またはセルを持つUIA DataItemの構造も引�
 }
 ```
 
-来院確認：**直前のfind応答を使用**し、新しい要求IDで送ります。
+来院確認：現在の一覧の**受付番号を指定**し、新しい要求IDで送ります。診察券番号・患者名は不要です。
 
 ```json
 {
   "requestId": "20260928-arrived-001",
   "action": "arrived",
-  "patientId": "00011",
-  "expectedReceptionNo": "36",
-  "expectedPatientName": "テスト患者"
+  "receptionNo": "36"
 }
 ```
 
-連携は `action: "link"` です。各操作では最新画面から患者行を再特定し、受付番号・患者名を照合します。`案内`・`保留`はAPI対象外です。`print`は差し替え用インターフェースだけ用意し、現時点では`printing_not_configured`を返します。
+来院確認では、最新画面から受付番号が一致する行を1件に特定し、押下直前にも内部予約IDと診察券番号（空欄を含む）が変わっていないことを確認します。患者名の完全一致は求めません。診察券番号のない初診・手入力行も対象です。同じ受付番号が複数ある場合は `ambiguous_reception` で停止します。要求に `patientId` を併記した場合のみ追加照合します。旧 `expectedReceptionNo` も受付番号指定として利用でき、`receptionNo` と併記する場合は一致が必要です。
+
+連携も `action: "link"` と `receptionNo` で指定します。診察券番号・患者名は必須ではありません。`expectedReceptionNo` 互換入力、任意の `patientId` 追加照合、受付番号の一意性と内部予約IDの再確認は来院確認と共通です。連携ONの確認も診察券番号ではなく受付番号・内部予約IDで行います。氏名編集だけでは失敗にせず、同じ診察券番号の予約が複数あっても指定受付の行だけを確認します。`案内`・`保留`はAPI対象外です。`print`は差し替え用インターフェースだけ用意し、現時点では`printing_not_configured`を返します。
 
 来院確認の `success: true, code: "invoked"` はInvokePattern呼出しを送信した意味です。
 
-連携はONにする操作です。ボタン名が `〆` なら押さずに `already_linked` を返します。空欄なら患者行を再照合し、`InvokePattern` で１回だけ押下します。同じ行・内部IDのボタン名が `〆` に変わったことを最大8秒確認し、`linked` を返します。確認できない場合は `outcome_unknown` とし、自動の再押下はしません。その他のボタン名は `link_state_unverified` で停止します。
+連携はONにする操作です。ボタン名が `〆` なら押さずに `already_linked` を返します。空欄なら患者行を再照合し、そのボタンからIEのHTMLサーバーを特定して当日一覧フレームを取得します。HTML内の `chk<内部予約ID>` が1件で、type=button・値が空欄・クラスが `btCheckOff` または `btCheckOffOver` であること、`onmousedown=changeChkFlag(...)` が診断で確認した14個の文字列引数であることを検証します。イベント引数の内部予約ID2箇所・受付番号・既知の診察券番号も照合し、左ボタンの `onmousedown` を1回だけ送ります。iCall本来の `changeChkFlag` が `RunClientCmdWrapper` と状態更新を実行するため、関数の直接呼出し・追加のclick・再送は行いません。HTML確認時点で既にONなら何も送信しません。同じ行・内部IDのボタン名が `〆` に変わったことを最大8秒確認し、`linked` を返します。確認できない場合は `outcome_unknown` とし、自動の再押下はしません。その他のボタン名は `link_state_unverified` で停止します。
 
 連携ではマウス移動・ホバー・物理クリック・前面表示の強制を行いません。`linked` はiCall上のON表示の確認であり、Dynamics側の受付完了は実環境で確認してください。ReceptionAgentは連携応答を20秒待ち、旧iCallManagerの `invoked` も互換性のため受け付けます。
+
+連携失敗時は、応答の `[link-v2 phase=...]` とログの `link_button_dispatch`・`link_failed`・`link_outcome_unknown` で、ボタン送信時・送信後の読取時・ON確認タイムアウトを区別できます。例外の場合は元のコードまたはHRESULTを記録します。ONを確認できなくても自動で再押下はしません。
+
+`link_button_dispatch` のmethodは `MSHTML.fireEvent(onmousedown)` です。サイトのイベント定義が変わった場合は送信前に `link_handler_unverified`、対象ボタンが一意でなければ `link_dom_not_unique` として停止します。来院確認は従来どおりUIAのInvokeを利用します。
+
+一覧を開いた状態で「行構造診断」を押すと、最初の患者行の連携ボタンについて `=== 連携HTML診断（読取専用） ===` を先頭に追加します。UIAで特定したボタンからIEのHTMLサーバーを取得し、`fid=daylist&vid=daylist06` の文書を1件に特定してから `chk<内部予約ID>` のouterHTML・イベント属性・所属フォーム・インラインスクリプトを読み取ります。ボタンやスクリプトは実行せず、外部スクリプトも取得しません。患者未割当ダミーは対象から外します。割当ダイアログを開いている場合は、従来どおり割当HTML診断を表示します。
 
 | code | 意味・対応 |
 |---|---|
@@ -129,6 +135,8 @@ MSAAのTable / Row / Cell、またはセルを持つUIA DataItemの構造も引�
 | operations_disabled | アプリで実操作が無効 |
 | not_found | 表示一覧に患者がいない |
 | ambiguous_patient | 同じ患者IDの行が複数ある |
+| ambiguous_reception | 来院確認・連携で同じ受付番号の行が複数ある |
+| identity_missing | 来院確認・連携対象の内部予約IDを確認できない |
 | identity_changed | 受付番号・氏名または操作直前の行状態が変化 |
 | action_unavailable | ボタンがない／無効。実行済みと断定しない |
 | table_not_unique / row_layout_unverified | 画面構造の確認が必要 |
@@ -149,8 +157,8 @@ var client = new FileICallBridgeClient(@"\\iCallPC\iCallBridge");
 var request = new BridgeRequest(Guid.NewGuid().ToString("N"), "find", patientId);
 var found = await client.SendAsync(request, TimeSpan.FromSeconds(30), cancellationToken);
 // found.Successを確認し、患者情報を画面/上位ワークフローで確認してから操作する。
-var arrivedRequest = new BridgeRequest(Guid.NewGuid().ToString("N"), "arrived",
-    patientId, found.ReceptionNo, found.PatientName);
+var arrivedRequest = new BridgeRequest(Guid.NewGuid().ToString("N"), "arrived")
+    { ReceptionNo = found.ReceptionNo };
 // await client.SendAsync(arrivedRequest, TimeSpan.FromSeconds(30), cancellationToken);
 ```
 
