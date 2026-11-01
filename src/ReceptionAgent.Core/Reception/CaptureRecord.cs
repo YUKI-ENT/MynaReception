@@ -3,8 +3,8 @@ using ReceptionAgent.ICall;
 
 namespace ReceptionAgent.Reception;
 
-public enum CaptureStage { Captured, PatientIdentified, FindWaiting, ReservationFound, ArrivedWaiting, LinkReady, LinkWaiting, Completed, NeedsReview, CandidateFindWaiting }
-public enum ReceptionOperationMode { Kiosk, Staff }
+public enum CaptureStage { Captured, PatientIdentified, FindWaiting, ReservationFound, ArrivedWaiting, LinkReady, LinkWaiting, Completed, NeedsReview, CandidateFindWaiting, AssignWaiting }
+public enum ReceptionOperationMode { Kiosk, Staff, MonitorOnly, Reservation, WalkIn }
 public enum StaffReceiptState { None, Running, Completed, NeedsReview }
 
 public sealed class CaptureRecord
@@ -61,6 +61,9 @@ public sealed class CaptureRecord
     public ICallRequest? PendingRequest { get; set; }
     public string ReceptionNo { get; set; } = "";
     public string ReservationPatientName { get; set; } = "";
+    public bool AssignmentRequested { get; set; }
+    public string AssignmentResult { get; set; } = "未要求";
+    public DateTimeOffset? AssignedAt { get; set; }
     public string ArrivalResult { get; set; } = "未要求";
     public string LinkResult { get; set; } = "未要求";
     public string DynamicsReceiptDirectory { get; set; } = "";

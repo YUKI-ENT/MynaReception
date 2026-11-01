@@ -60,9 +60,10 @@ public sealed class KioskFlow
             Routes = [new() { Variable = "hasFever", Value = "true", NextPageId = "feverHelp" }, new() { Variable = "saysReserved", Value = "false", NextPageId = "noReservation" }] },
         new() { Id = "lookup", Kind = KioskPageKind.Lookup, Title = "予約を確認しています", Message = "この画面でお待ちください。", NextPageId = "newPatient",
             Routes = [new() { Variable = "category", Value = "ReturningWithReservation", NextPageId = "reservedDone" },
-                new() { Variable = "category", Value = "ReturningWithoutReservation", NextPageId = "noReservation" }] },
+                new() { Variable = "category", Value = "ReturningWithoutReservation", NextPageId = "noReservation" },
+                new() { Variable = "category", Value = "NewWithoutReservation", NextPageId = "noReservation" }] },
         new() { Id = "reservedDone", Kind = KioskPageKind.Guidance, Title = "予約を確認しました", Message = "職員の案内をお待ちください。", NextStep = KioskNextStep.Finish },
-        new() { Id = "noReservation", Kind = KioskPageKind.Guidance, Title = "窓口へお越しください", Message = "職員が予約をお取りします。受付窓口へお声掛けください。" },
+        new() { Id = "noReservation", Kind = KioskPageKind.Guidance, Title = KioskGuidance.NoReservationTitle, Message = KioskGuidance.NoReservationMessage },
         new() { Id = "newPatient", Kind = KioskPageKind.Guidance, Title = "窓口で確認します", Message = "問診票や医療証などを職員が確認します。受付窓口へお越しください。" },
         new() { Id = "feverHelp", Kind = KioskPageKind.Guidance, Title = "職員へお声掛けください", Message = "発熱について職員が確認します。受付へお声掛けください。" }
     ];

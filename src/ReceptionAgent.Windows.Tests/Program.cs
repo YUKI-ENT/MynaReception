@@ -13,6 +13,7 @@ static class Program
     static void Check(bool condition, string message) { if (!condition) throw new Exception(message); Console.WriteLine("PASS: " + message); }
     static async Task Main()
     {
+        await RunMonitoringRestore();
         await RunAutomaticSwitches();
         await RunFlowEditor();
         await RunFormBuilder();
@@ -28,6 +29,112 @@ static class Program
         await Run(true, false);
         await Run(false, true);
         Console.WriteLine("Windows lifecycle tests passed (isolated synthetic stores).");
+    }
+    static Task RunMonitoringRestore()
+    {
+        var done = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var thread = new Thread(() =>
+        {
+            string root = Path.Combine(Path.GetTempPath(), "monitor-restore-ui-" + Guid.NewGuid().ToString("N"));
+            Exception? error = null;
+            try
+            {
+                string Folder(string name) { string path = Path.Combine(root, name); Directory.CreateDirectory(path); return path; }
+                new AgentSettings { FaceXmlDirectory = Folder("face"), FaceTrashDirectory = Folder("trash"),
+                    ICallRequestDirectory = Folder("req"), ICallResponseDirectory = Folder("res"),
+                    OperationMode = ReceptionAgent.Reception.ReceptionOperationMode.WalkIn, ReconcileReferenceNumber = false,
+                    AutoArrival = true, AutoLink = true }.Save(root);
+                using var listener = new TcpListener(IPAddress.Loopback, 0); listener.Start();
+                int port = ((IPEndPoint)listener.LocalEndpoint).Port; listener.Stop();
+                new KioskOptions { Port = port }.Save(root);
+                void Click(CheckBox tile) => typeof(CheckBox).GetMethod("OnClick", PrivateInstance)!.Invoke(tile, [EventArgs.Empty]);
+                // Three application lifetimes: turn ON, reopen and turn OFF, reopen while stopped.
+                for (int phase = 0; phase < 3; phase++)
+                {
+                    int currentPhase = phase;
+                    using var form = (MainForm)Activator.CreateInstance(typeof(MainForm), PrivateInstance, null, [root], null)!;
+                    form.ShowInTaskbar = false; form.StartPosition = FormStartPosition.Manual; form.Location = new(-32000, -32000);
+                    form.Shown += async (_, _) =>
+                    {
+                        try
+                        {
+                            if (Field(form, "webStartTask") is Task webStart) await webStart;
+                            var xml = (CheckBox)Field(form, "xmlMode")!;
+                            var walkIn = (CheckBox)Field(form, "walkInMode")!;
+                            var kiosk = (CheckBox)Field(form, "kioskMode")!;
+                            IEnumerable<Control> All(Control c) => c.Controls.Cast<Control>().SelectMany(x => new[] { x }.Concat(All(x)));
+                            Check(!All(form).OfType<Button>().Any(b => b.Text is "監視開始" or "監視停止"), "legacy monitoring buttons are removed");
+                            bool[] Tiles() => new[] { xml.Checked, ((CheckBox)Field(form, "reservationMode")!).Checked, walkIn.Checked, kiosk.Checked };
+                            var reservation = (CheckBox)Field(form, "reservationMode")!;
+                            if (currentPhase == 0)
+                            {
+                                Check(Tiles().All(on => !on) && Field(form, "monitor") is null, "saved OFF state displays all levels OFF");
+                                Click(kiosk);
+                                Check(Tiles().All(on => on) && Field(form, "monitor") is not null && AgentSettings.Load(root).StartMonitoringOnLaunch,
+                                    "Kiosk click starts monitoring and turns every lower tile ON");
+                            }
+                            else if (currentPhase == 1)
+                            {
+                                Check(Tiles().All(on => on) && Field(form, "monitor") is not null, "restart restores all four levels ON for Kiosk");
+                                Click(kiosk);
+                                Check(Tiles().SequenceEqual(new[] { true, true, true, false }), "Kiosk OFF steps down to allocation level");
+                                Click(walkIn);
+                                Check(Tiles().SequenceEqual(new[] { true, true, false, false }), "allocation OFF disables higher levels and retains arrival and XML");
+                                Click(reservation);
+                                Check(Tiles().SequenceEqual(new[] { true, false, false, false }), "arrival OFF retains XML monitoring only");
+                                Click(xml);
+                                Check(Tiles().All(on => !on) && !AgentSettings.Load(root).StartMonitoringOnLaunch,
+                                    "XML OFF disables every level and saves stopped state");
+                                var deadline = DateTime.UtcNow.AddSeconds(5);
+                                while (Field(form, "cancellation") is not null && DateTime.UtcNow < deadline) await Task.Delay(20);
+                                Check(Field(form, "monitor") is null && xml.Enabled, "stop completes and XML tile permits restarting");
+                            }
+                            else
+                            {
+                                Check(Tiles().All(on => !on) && Field(form, "monitor") is null, "restart restores all levels OFF after stopping XML");
+                                Click(walkIn);
+                                Check(Tiles().SequenceEqual(new[] { true, true, true, false }) && Field(form, "monitor") is not null,
+                                    "allocation click starts XML and arrival levels while keeping Kiosk OFF");
+                            }
+                            var saved = AgentSettings.Load(root);
+                            Check(saved.AutoArrival && saved.AutoLink, "monitor toggles preserve automatic operation preferences");
+                            form.Close();
+                        }
+                        catch (Exception ex) { error = ex; form.Close(); }
+                    };
+                    Application.Run(form);
+                    if (error is not null) throw error;
+                    Check(AgentSettings.Load(root).StartMonitoringOnLaunch == (phase != 1), "application shutdown preserves the last requested XML monitoring state");
+                }
+                foreach (var mode in Enum.GetValues<ReceptionAgent.Reception.ReceptionOperationMode>())
+                {
+                    var config = AgentSettings.Load(root); config.OperationMode = mode; config.Save(root);
+                    using var reopened = (MainForm)Activator.CreateInstance(typeof(MainForm), PrivateInstance, null, [root], null)!;
+                    reopened.ShowInTaskbar = false; reopened.StartPosition = FormStartPosition.Manual; reopened.Location = new(-32000, -32000);
+                    reopened.Shown += async (_, _) =>
+                    {
+                        try
+                        {
+                            if (Field(reopened, "webStartTask") is Task webStart) await webStart;
+                            int level = ReceptionAgent.Reception.ReceptionModes.Level(mode);
+                            Check(((CheckBox)Field(reopened, "xmlMode")!).Checked &&
+                                ((CheckBox)Field(reopened, "walkInMode")!).Checked == (level >= 3) &&
+                                ((CheckBox)Field(reopened, "kioskMode")!).Checked == (level >= 4) &&
+                                ((CheckBox)Field(reopened, "reservationMode")!).Checked == (level >= 2),
+                                "restart restores every saved cumulative level: " + mode);
+                            reopened.Close();
+                        }
+                        catch (Exception ex) { error = ex; reopened.Close(); }
+                    };
+                    Application.Run(reopened);
+                    if (error is not null) throw error;
+                }
+                done.SetResult();
+            }
+            catch (Exception ex) { done.SetException(ex); }
+            finally { Microsoft.Data.Sqlite.SqliteConnection.ClearAllPools(); if (Directory.Exists(root)) Directory.Delete(root, true); }
+        });
+        thread.SetApartmentState(ApartmentState.STA); thread.Start(); return done.Task.WaitAsync(TimeSpan.FromSeconds(30));
     }
     static Task RunAutomaticSwitches()
     {
@@ -160,6 +267,7 @@ static class Program
             string root = Path.Combine(Path.GetTempPath(), "agent-settings-layout-" + Guid.NewGuid().ToString("N"));
             try
             {
+                new AgentSettings { StartMonitoringOnLaunch = true }.Save(root);
                 using var form = new AgentSettingsForm(root);
                 form.ShowInTaskbar = false; form.StartPosition = FormStartPosition.Manual; form.Location = new(-32000, -32000);
                 form.Show(); Application.DoEvents();
@@ -171,10 +279,9 @@ static class Program
                     Check(buttons.Length == 6, "settings exposes six folder selectors");
                     Check(buttons.All(b => b.Right <= b.Parent!.ClientSize.Width && b.Parent.Right <= b.Parent.Parent!.ClientSize.Width), $"folder browse buttons fit settings at width {width}");
                 }
-                var startup = Descendants(form).OfType<CheckBox>().Single(c => c.Text == "アプリ起動時に監視を開始する");
-                startup.Checked = true;
+                Check(!Descendants(form).OfType<CheckBox>().Any(c => c.Text == "アプリ起動時に監視を開始する"), "settings delegates monitoring state to the XML tile");
                 Descendants(form).OfType<Button>().Single(b => b.Text == "保存").PerformClick();
-                Check(AgentSettings.Load(root).StartMonitoringOnLaunch, "startup switch saves from settings form");
+                Check(AgentSettings.Load(root).StartMonitoringOnLaunch, "settings preserves the saved monitoring state");
                 done.SetResult();
             }
             catch (Exception ex) { done.SetException(ex); }
@@ -201,7 +308,12 @@ static class Program
                 new KioskOptions { Port = port }.Save(root);
                 var store = new ReceptionAgent.Reception.CaptureStore(Path.Combine(root, "Reception"));
                 store.Capture(new ReceptionAgent.Reception.CaptureRecord { FileName = "synthetic.xml", ContentHash = "synthetic",
-                    GeneratedAt = DateTime.Today, Stage = ReceptionAgent.Reception.CaptureStage.Completed }, [1]);
+                    GeneratedAt = DateTime.Today, CapturedAt = new DateTimeOffset(DateTime.Today.AddHours(8)), Stage = ReceptionAgent.Reception.CaptureStage.Completed }, [1]);
+                foreach (int hour in new[] { 10, 9 })
+                    store.Capture(new ReceptionAgent.Reception.CaptureRecord { FileName = $"synthetic-{hour}.xml", ContentHash = $"synthetic-{hour}",
+                        GeneratedAt = DateTime.Today, CapturedAt = new DateTimeOffset(DateTime.Today.AddHours(hour)), Stage = ReceptionAgent.Reception.CaptureStage.Completed }, [1]);
+                var oldest = store.List().Single(r => r.FileName == "synthetic.xml");
+                store.Save(oldest); // Updating a result must not change its place in the list.
                 using var form = (MainForm)Activator.CreateInstance(typeof(MainForm), PrivateInstance, null, [root], null)!;
                 form.ShowInTaskbar = false; form.StartPosition = FormStartPosition.Manual; form.Location = new(-32000, -32000);
                 form.Shown += async (_, _) =>
@@ -210,15 +322,50 @@ static class Program
                     {
                         if (Field(form, "webStartTask") is Task webStart) await webStart;
                         Check((Field(form, "monitor") is not null) == autoStart, $"launch monitoring follows saved option {autoStart}");
-                        var receptionModeSelector = (ComboBox)Field(form, "modeSelector")!;
-                        Check(receptionModeSelector.SelectedIndex == 0 && receptionModeSelector.Items.Count == 2, "main form offers persisted Kiosk and staff reception modes");
-                        receptionModeSelector.SelectedIndex = 1;
-                        Check(AgentSettings.Load(root).OperationMode == ReceptionAgent.Reception.ReceptionOperationMode.Staff &&
-                            !(bool)typeof(MainForm).GetProperty("KioskReady", PrivateInstance)!.GetValue(form)!, "staff mode saves immediately and bypasses Kiosk availability");
-                        receptionModeSelector.SelectedIndex = 0;
+                        var kioskMode = (CheckBox)Field(form, "kioskMode")!;
+                        var reservationMode = (CheckBox)Field(form, "reservationMode")!;
+                        var xmlMode = (CheckBox)Field(form, "xmlMode")!;
+                        Check(xmlMode.Checked == autoStart && kioskMode.Checked == autoStart && reservationMode.Checked == autoStart,
+                            "Kiosk startup restores cumulative tiles only while monitoring is ON");
+                        var walkInMode = (CheckBox)Field(form, "walkInMode")!;
+                        Check(walkInMode.Enabled, "walk-in allocation mode is available");
+                        void ClickTile(CheckBox tile) => typeof(CheckBox).GetMethod("OnClick", PrivateInstance)!.Invoke(tile, [EventArgs.Empty]);
+                        if (!kioskMode.Checked) ClickTile(kioskMode);
+                        ClickTile(walkInMode);
+                        Check(xmlMode.Checked && reservationMode.Checked && !walkInMode.Checked && !kioskMode.Checked &&
+                            AgentSettings.Load(root).OperationMode == ReceptionAgent.Reception.ReceptionOperationMode.Reservation &&
+                            !(bool)typeof(MainForm).GetProperty("KioskReady", PrivateInstance)!.GetValue(form)!, "allocation OFF returns to arrival level");
+                        ClickTile(reservationMode);
+                        Check(xmlMode.Checked && !reservationMode.Checked && !((CheckBox)Field(form, "autoArrival")!).Enabled && !((CheckBox)Field(form, "staffPrint")!).Enabled,
+                            "arrival OFF leaves only XML monitoring active");
+                        ClickTile(walkInMode);
+                        Check(xmlMode.Checked && reservationMode.Checked && walkInMode.Checked && !kioskMode.Checked &&
+                            AgentSettings.Load(root).OperationMode == ReceptionAgent.Reception.ReceptionOperationMode.WalkIn &&
+                            ((CheckBox)Field(form, "autoArrival")!).Enabled, "allocation level includes XML and arrival operations");
+                        ClickTile(kioskMode);
+                        Check(xmlMode.Checked && reservationMode.Checked && walkInMode.Checked && kioskMode.Checked,
+                            "Kiosk level includes all lower levels");
                         var grid = (DataGridView)Field(form, "grid")!;
-                        Check(grid.Rows.Count == 1 && grid.Columns["氏名"]!.Visible && grid.Columns["状態"]!.Visible, "main list retains patient and status columns");
+                        Check(grid.Rows.Count == 3 && grid.Columns["氏名"]!.Visible && grid.Columns["状態"]!.Visible, "main list retains patient and status columns");
                         Check(new[] { "ファイル名", "ファイル作成日時", "XML生成日時", "取得日時", "再検証カルテ番号", "再検証" }.All(c => !grid.Columns[c]!.Visible), "main list hides filename and diagnostic columns");
+                        Check(grid.Rows.Cast<DataGridViewRow>().Select(r => (string?)r.Cells["ファイル名"].Value).SequenceEqual(new[] { "synthetic.xml", "synthetic-9.xml", "synthetic-10.xml" }),
+                            "main list shows oldest capture first and latest last regardless of result updates");
+                        if (!autoStart)
+                        {
+                            foreach (int width in new[] { 1280, 960 })
+                            {
+                                form.Size = new Size(width, 720); form.PerformLayout(); Application.DoEvents();
+                                var tiles = (TableLayoutPanel)Field(form, "modeTiles")!;
+                                Check(tiles.Controls.Cast<Control>().All(c => tiles.ClientRectangle.Contains(c.Bounds) && c.Width > 150 && c.Height >= 96),
+                                    $"all four mode tiles fit at window width {width}");
+                                if (Environment.GetEnvironmentVariable("RECEPTION_MODE_SCREENSHOT") is { Length: > 0 } screenshot)
+                                {
+                                    using var bitmap = new Bitmap(form.Width, form.Height);
+                                    form.DrawToBitmap(bitmap, new Rectangle(Point.Empty, form.Size));
+                                    bitmap.Save(Path.ChangeExtension(screenshot, $"{width}.png"), System.Drawing.Imaging.ImageFormat.Png);
+                                }
+                            }
+                        }
                         if (offlineOqs)
                         {
                             var monitor = (ReceptionAgent.Reception.FaceCaptureMonitor)Field(form, "monitor")!;

@@ -33,7 +33,7 @@ public sealed class ICallFileClient
     public async Task<ICallResponse> SendAsync(ICallRequest request, string requestDirectory, string responseDirectory, TimeSpan timeout, CancellationToken token,
         Action<string, object>? log = null)
     {
-        if (!System.Text.RegularExpressions.Regex.IsMatch(request.RequestId, @"\Ara-[a-f0-9]{32}-(find|find_candidates|arrived|link)\z"))
+        if (!System.Text.RegularExpressions.Regex.IsMatch(request.RequestId, @"\Ara-[a-f0-9]{32}-(find|find_candidates|arrived|link|assign)\z"))
             throw new ArgumentException("ReceptionAgentのrequestIdが不正です。");
         if (!Directory.Exists(requestDirectory) || !Directory.Exists(responseDirectory)) throw new DirectoryNotFoundException("iCallManagerのrequest/responseフォルダーを確認してください。");
         string requestPath = Path.Combine(requestDirectory, request.RequestId + ".json"), responsePath = Path.Combine(responseDirectory, request.RequestId + ".json");

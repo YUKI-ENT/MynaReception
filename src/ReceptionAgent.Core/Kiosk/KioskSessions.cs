@@ -376,6 +376,12 @@ public sealed class KioskSessions
                             }
                             if (session.MonthDayAnswers?.HasFever == true)
                                 ToStaff(session, "発熱があると回答されています。受付へお声掛けください。");
+                            else if (session.Category == ReceptionCategory.NewWithoutReservation)
+                            {
+                                // Staff guidance is required even for saved/custom flows that point to a Finish page.
+                                ToStaff(session, KioskGuidance.NoReservationMessage);
+                                session.Title = KioskGuidance.NoReservationTitle;
+                            }
                             else if (session.MonthDayAnswers is { } input && capture.ReservationFoundAtReception != input.SaysReserved)
                                 ToStaff(session, "予約の回答と照会結果の確認が必要です。受付へお声掛けください。");
                         }

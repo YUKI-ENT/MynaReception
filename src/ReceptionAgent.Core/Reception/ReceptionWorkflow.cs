@@ -23,11 +23,19 @@ public sealed class ReceptionWorkflow(CaptureStore store, Func<FaceIdentity, Can
         QueueOperationAsync(session.CaptureId ?? throw new InvalidDataException("Kiosk受付のXMLがありません。"), action, session, token);
     private async Task QueueOperationAsync(string id, string action, Kiosk.KioskSession? session, CancellationToken token)
     {
-        if (action is not ("arrived" or "link")) throw new ArgumentException("操作が不正です。");
+        if (action is not ("arrived" or "link" or "assign")) throw new ArgumentException("操作が不正です。");
         await store.WorkflowGate.WaitAsync(token);
         try
         {
             var record = store.Get(id);
+            if (action == "assign")
+            {
+                if (session is not null || !WalkInAssignment.CanQueue(record))
+                    throw new InvalidDataException("割当は当日の診察券番号が一意に確定した再診・予約なしの未操作行だけが対象です。");
+                QueueAssignment(record);
+                store.Save(record);
+                return;
+            }
             if (session is not null && (!Kiosk.KioskAutomationEligibility.IsEligible(session, record, DateTimeOffset.Now) ||
                 session.Automation is null || session.Automation.NeedsReview))
                 throw new InvalidDataException("Kiosk自動受付の条件を満たしていません。職員が確認してください。");
@@ -105,8 +113,8 @@ public sealed class ReceptionWorkflow(CaptureStore store, Func<FaceIdentity, Can
                     Prepare(record, "find", CaptureStage.FindWaiting); break;
                 case CaptureStage.ReservationFound:
                     var config = currentSettings?.Invoke() ?? settings;
-                    record.AutoArrival = config?.AutoArrival == true;
-                    record.AutoLink = config?.AutoLink == true && config.ReceptionLinkMode != ReceptionLinkMode.None;
+                    record.AutoArrival = ReceptionModes.IncludesArrival(record.OperationMode) && config is not null && ReceptionModes.IncludesArrival(config.OperationMode) && config?.AutoArrival == true;
+                    record.AutoLink = ReceptionModes.IncludesArrival(record.OperationMode) && config is not null && ReceptionModes.IncludesArrival(config.OperationMode) && config?.AutoLink == true && config.ReceptionLinkMode != ReceptionLinkMode.None;
                     record.AutomaticLinkMode = config?.ReceptionLinkMode ?? ReceptionLinkMode.None;
                     record.AutomaticReceiptDirectory = config?.DynamicsReceiptDirectory ?? "";
                     record.AutomaticOperationRequested = record.AutoArrival || record.AutoLink;
@@ -119,19 +127,37 @@ public sealed class ReceptionWorkflow(CaptureStore store, Func<FaceIdentity, Can
                 case CaptureStage.CandidateFindWaiting:
                 case CaptureStage.ArrivedWaiting:
                 case CaptureStage.LinkWaiting:
+                case CaptureStage.AssignWaiting:
                     var request = record.PendingRequest ?? throw new InvalidDataException("保存済み要求がありません。");
                     if (request.Action is "arrived" or "link" && !record.ManualOperationRequested && record.KioskAutomaticSessionId.Length == 0 && !record.AutomaticOperationRequested)
                         throw new InvalidDataException("旧設定による自動操作要求を停止しました。iCallManager側の処理結果を確認してください。");
                     if (request.Action is "arrived" or "link" && (record.ReconciliationIdentityMismatch ||
                         record.VerifiedPatientId.Length > 0 && record.VerifiedPatientId != request.PatientId))
                         throw new InvalidDataException("送信前のカルテ番号再検証に不整合があります。職員が確認してください。");
+                    if (request.Action == "assign" && (!record.AssignmentRequested || !WalkInAssignment.HasEligiblePatient(record) ||
+                        request.PatientId != record.Lookup?.Selected?.PatientId))
+                        throw new InvalidDataException("割当前の患者・予約なしの確認条件を満たしません。職員が確認してください。");
                     // The request was committed in the preceding step, before any external write.
                     record.ICallStartedAt ??= DateTimeOffset.Now;
                     store.Save(record);
-                    var response = await new ICallFileClient().SendAsync(request, record.RequestDirectory, record.ResponseDirectory, TimeSpan.FromSeconds(request.Action == "link" ? 20 : 2), token,
+                    var response = await new ICallFileClient().SendAsync(request, record.RequestDirectory, record.ResponseDirectory, TimeSpan.FromSeconds(request.Action == "assign" ? 60 : request.Action == "link" ? 20 : 2), token,
                         (eventName, detail) => store.Log(eventName, record.Id, detail));
                     record.ICallReceivedAt = DateTimeOffset.Now;
                     record.Responses.Add(response);
+                    if (request.Action == "assign")
+                    {
+                        record.AssignmentResult = response.Code + ": " + response.Message;
+                        record.PendingRequest = null;
+                        if (!response.Success || response.Code != "assigned" ||
+                            string.IsNullOrWhiteSpace(response.ReceptionNo) || string.IsNullOrWhiteSpace(response.PatientName))
+                            throw new InvalidDataException("枠割当は要確認です。再指示せずiCall画面を確認してください。 " + record.AssignmentResult);
+                        record.ReceptionNo = response.ReceptionNo;
+                        record.ReservationPatientName = response.PatientName;
+                        record.AssignedAt = response.CompletedAt;
+                        record.Stage = CaptureStage.ReservationFound;
+                        record.Status = "予約なし枠割当完了／来院確認・連携の設定を確認中";
+                        break;
+                    }
                     if (request.Action == "find_candidates")
                     {
                         ApplyCandidateResponse(record, response);
@@ -143,6 +169,9 @@ public sealed class ReceptionWorkflow(CaptureStore store, Func<FaceIdentity, Can
                         record.ReservationFoundAtReception = false; record.ReceptionClassifiedAt = DateTimeOffset.Now;
                         record.Stage = CaptureStage.Completed; record.Status = "カルテ番号取得済み／現在のiCall一覧に予約なし";
                         record.PendingRequest = null;
+                        var assignmentSettings = currentSettings?.Invoke() ?? settings;
+                        if (ReceptionModes.IncludesAssignment(record.OperationMode) && assignmentSettings is not null && ReceptionModes.IncludesAssignment(assignmentSettings.OperationMode) && WalkInAssignment.CanQueue(record))
+                            QueueAssignment(record);
                         break;
                     }
                     if (request.Action == "arrived") record.ArrivalResult = response.Code + ": " + response.Message;
@@ -172,14 +201,23 @@ public sealed class ReceptionWorkflow(CaptureStore store, Func<FaceIdentity, Can
         }
         catch (OperationCanceledException) { throw; }
         catch (Exception ex) when (ex is InvalidDataException or System.Xml.XmlException or System.Text.DecoderFallbackException)
-        { record.Stage = CaptureStage.NeedsReview; record.Status = ex.Message; }
+        { record.Stage = CaptureStage.NeedsReview; record.Status = ex.Message;
+            if (record.PendingRequest?.Action == "assign") record.AssignmentResult = "要確認: " + ex.Message;
+        }
         catch (Exception ex)
         { if (ex is TimeoutException) record.ICallTimeoutCount++;
+            if (record.PendingRequest?.Action == "assign") record.AssignmentResult = "同じ要求IDで結果確認待ち（再割当はしません）";
             record.Status = "再試行待ち: " + ex.Message; record.RetryAfter = DateTimeOffset.Now.AddSeconds(10);
             store.Log("step_retry", record.Id, new { error = ex.GetType().Name, record.RetryAfter, record.ICallTimeoutCount }); }
         store.Save(record);
         store.Log("step_completed", record.Id, new { from = previousStage.ToString(), to = record.Stage.ToString(), elapsedMs = elapsed.Elapsed.TotalMilliseconds,
             requestId = record.PendingRequest?.RequestId, code = record.Responses.LastOrDefault()?.Code });
+    }
+    private static void QueueAssignment(CaptureRecord record)
+    {
+        record.AssignmentRequested = true;
+        record.AssignmentResult = "割当応答待ち";
+        Prepare(record, "assign", CaptureStage.AssignWaiting);
     }
     private static void Prepare(CaptureRecord record, string action, CaptureStage stage)
     {
@@ -199,7 +237,7 @@ public sealed class ReceptionWorkflow(CaptureStore store, Func<FaceIdentity, Can
         if (record.Conflict || record.GeneratedAt.Date != DateTime.Today || record.Lookup?.Selected is null ||
             record.ReconciliationIdentityMismatch ||
             record.VerifiedPatientId.Length > 0 && record.VerifiedPatientId != record.Lookup.Selected.PatientId ||
-            record.ReservationFoundAtReception != true || string.IsNullOrWhiteSpace(record.ReceptionNo) || string.IsNullOrWhiteSpace(record.ReservationPatientName))
+            (record.ReservationFoundAtReception != true && record.AssignedAt is null) || string.IsNullOrWhiteSpace(record.ReceptionNo) || string.IsNullOrWhiteSpace(record.ReservationPatientName))
             throw new InvalidDataException("自動来院確認・連携には当日の患者ID・予約の一意な確認が必要です。");
         bool Done(string action) => record.Responses.Any(r => r.RequestId == "ra-" + record.Id + "-" + action && r.Success &&
             (action == "arrived" ? r.Code == "invoked" : r.Code is "linked" or "already_linked" or "invoked"));

@@ -28,8 +28,7 @@ public sealed class AgentSettingsForm : ReceptionAgentForm
         var response = Folder("iCallManager responseフォルダー（res）", current.ICallResponseDirectory);
         var openResponse = new CheckBox { AutoSize = true, Text = "監視開始時にエクスプローラで開く", Checked = current.OpenResponseFolderOnMonitorStart };
         layout.Controls.Add(openResponse);
-        var startOnLaunch = new CheckBox { AutoSize = true, Text = "アプリ起動時に監視を開始する", Checked = current.StartMonitoringOnLaunch };
-        layout.Controls.Add(startOnLaunch);
+        layout.Controls.Add(new Label { AutoSize = true, Text = "XML監視のON/OFFと動作モードはメイン画面で切り替え、次回起動時も復元します。" });
         var pos = new Button { Text = "POSプリンタ設定…（80mm / 58mm・患者用／スタッフ用文面）", AutoSize = true };
         pos.Click += (_, _) => { using var dialog = new PosPrintSettingsForm(current.PosPrint); if (dialog.ShowDialog(this) == DialogResult.OK) current.PosPrint = dialog.Options; };
         layout.Controls.Add(pos);
@@ -56,7 +55,7 @@ public sealed class AgentSettingsForm : ReceptionAgentForm
         layout.Controls.Add(reconcile);
         layout.Controls.Add(new Label { AutoSize = true, Text = "再検証は監視中の当日保存済みXMLが対象。取込5分後からWKO資格確認結果表示の確定カルテ番号を照合し、整合後は終了します。" });
         layout.Controls.Add(new Label { AutoSize = true, Text = "受付連携方式は次の連携操作から適用します。受付済みのファイル出力は設定変更後も配送を続けます。他の取込設定は次回監視開始後に取り込むXMLへ適用します。" });
-        layout.Controls.Add(new Label { AutoSize = true, Text = "XML取得・患者照合・予約検索は自動です。来院確認・連携の自動実行はメイン画面上部のチェックで指定します（Kioskモード共通）。照会番号登録は手動、または上記設定で自動です。\r\n来院確認・iCall連携にはiCallManager側の「実操作を有効化」が必要です。直接出力の配送はアプリ起動中に継続します。自動取込は当日のXMLです。" });
+        layout.Controls.Add(new Label { AutoSize = true, Text = "XML取得・患者照合・予約検索は自動です。来院確認・連携の自動実行はメイン画面上部の動作モードと自動操作スイッチで指定します（処理モード未選択では自動操作しません）。照会番号登録は手動、または上記設定で自動です。\r\n来院確認・iCall連携にはiCallManager側の「実操作を有効化」が必要です。直接出力の配送はアプリ起動中に継続します。自動取込は当日のXMLです。" });
         var buttons = new FlowLayoutPanel { AutoSize = true, Dock = DockStyle.Top, FlowDirection = FlowDirection.RightToLeft };
         var cancel = new Button { Text = "キャンセル", DialogResult = DialogResult.Cancel, AutoSize = true };
         var save = new Button { Text = "保存", AutoSize = true };
@@ -67,7 +66,7 @@ public sealed class AgentSettingsForm : ReceptionAgentForm
                 new AgentSettings { OqsRoot = oqs.Text, FaceXmlDirectory = face.Text, FaceTrashDirectory = trash.Text,
                     AutoRegisterReferenceNumber = autoRegister.Checked, ReconcileReferenceNumber = reconcile.Checked, ICallRequestDirectory = request.Text, ICallResponseDirectory = response.Text, MarkArrived = false, LinkReservation = false,
                     OpenResponseFolderOnMonitorStart = openResponse.Checked,
-                    StartMonitoringOnLaunch = startOnLaunch.Checked, PosPrint = current.PosPrint, OperationMode = current.OperationMode,
+                    StartMonitoringOnLaunch = current.StartMonitoringOnLaunch, PosPrint = current.PosPrint, OperationMode = current.OperationMode,
                     AutoArrival = current.AutoArrival, AutoLink = current.AutoLink && (Reception.ReceptionLinkMode)linkMode.SelectedIndex != Reception.ReceptionLinkMode.None,
                     ReceptionLinkMode = (Reception.ReceptionLinkMode)linkMode.SelectedIndex, DynamicsReceiptDirectory = receipt.Text,
                     FaceEncoding = encoding.SelectedIndex == 0 ? Face.FaceXmlEncoding.Utf8 : Face.FaceXmlEncoding.ShiftJis }.Save(dataDirectory);

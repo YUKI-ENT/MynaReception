@@ -87,7 +87,7 @@ public sealed class CaptureStore
         while (reader.Read()) directories.Add(reader.GetString(0));
         return directories;
     }
-    public IReadOnlyList<CaptureRecord> List(bool pendingOnly = false, int limit = 500, DateOnly? date = null)
+    public IReadOnlyList<CaptureRecord> List(bool pendingOnly = false, int limit = 500, DateOnly? date = null, bool orderByCaptureTime = false)
     {
         using var connection = Open(); using var command = connection.CreateCommand();
         var conditions = new List<string>();
@@ -97,7 +97,7 @@ public sealed class CaptureStore
             conditions.Add("substr(json_extract(data,'$.GeneratedAt'),1,10)=$date");
             command.Parameters.AddWithValue("$date", date.Value.ToString("yyyy-MM-dd", System.Globalization.CultureInfo.InvariantCulture));
         }
-        command.CommandText = "SELECT data,conflict FROM captures " + (conditions.Count > 0 ? "WHERE " + string.Join(" AND ", conditions) + " " : "") + "ORDER BY updated " + (pendingOnly ? "ASC" : "DESC") + " LIMIT $limit";
+        command.CommandText = "SELECT data,conflict FROM captures " + (conditions.Count > 0 ? "WHERE " + string.Join(" AND ", conditions) + " " : "") + (orderByCaptureTime ? "ORDER BY julianday(json_extract(data,'$.CapturedAt')) DESC, id DESC" : "ORDER BY updated " + (pendingOnly ? "ASC" : "DESC")) + " LIMIT $limit";
         command.Parameters.AddWithValue("$limit", limit);
         if (pendingOnly) { command.Parameters.AddWithValue("$done", (int)CaptureStage.Completed); command.Parameters.AddWithValue("$review", (int)CaptureStage.NeedsReview); }
         using var reader = command.ExecuteReader(); var records = new List<CaptureRecord>();

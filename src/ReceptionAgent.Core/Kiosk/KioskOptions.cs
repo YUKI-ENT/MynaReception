@@ -20,12 +20,12 @@ public sealed class KioskOptions
     public int LookupTimeoutSeconds { get; set; } = 60;
     public List<KioskRule> Rules { get; set; } = Enum.GetValues<ReceptionCategory>()
         .Where(c => c is not (ReceptionCategory.Pending or ReceptionCategory.NeedsReview))
-        .Select(c => new KioskRule { Category = c, Message = c switch
+        .Select(c => new KioskRule { Category = c, Title = c == ReceptionCategory.NewWithoutReservation ? KioskGuidance.NoReservationTitle : "受付のご案内", Message = c switch
         {
             ReceptionCategory.ReturningWithReservation => "予約を確認しました。職員の案内をお待ちください。",
             ReceptionCategory.ReturningWithoutReservation => "この一覧では予約を確認できませんでした。受付へお声掛けください。",
             ReceptionCategory.NewWithReservation => "お名前と生年月日が一致する予約候補があります。受付で確認します。",
-            _ => "カルテと予約を確認できませんでした。診察券をお持ちの方も受付へお声掛けください。"
+            _ => KioskGuidance.NoReservationMessage
         } }).ToList();
     public void Validate()
     {

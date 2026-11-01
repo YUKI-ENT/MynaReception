@@ -53,7 +53,7 @@ internal static class AutomaticReceptionTests
                     actions.Add(req.Action); await Reply(r);
                 }
                 r = store.Get(r.Id);
-                check(r.Stage == CaptureStage.Completed && actions.SequenceEqual((arrival ? new[] { "arrived" } : []).Concat(link ? new[] { "link" } : [])),
+                check(r.Stage == CaptureStage.Completed && actions.SequenceEqual((arrival && ReceptionModes.IncludesArrival(mode) ? new[] { "arrived" } : []).Concat(link && ReceptionModes.IncludesArrival(mode) ? new[] { "link" } : [])),
                     $"global switches execute arrival then link in {mode} ({arrival}/{link}), surviving workflow restart");
                 await Worker().StepByIdAsync(r.Id, default);
                 check(store.Get(r.Id).Responses.Count == actions.Count, "completed global operations are not repeated");

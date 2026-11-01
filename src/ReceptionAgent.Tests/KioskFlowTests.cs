@@ -96,6 +96,7 @@ internal static class KioskFlowTests
         var noBooking = Questions(Start("noBooking"), "no", "no");
         check(noBooking.State == KioskSessionState.StaffHelp && noBooking.FlowPageId == "noReservation" && noBooking.CaptureId is null,
             "no reservation routes to manual booking without automatic lookup or assignment");
+        check(noBooking.Message.Contains("受付窓口") && noBooking.Message.Contains("初めて"), "no-reservation answer explicitly directs first-time patients to the counter");
         var fever = Questions(Start("fever"), "yes", "yes");
         check(fever.State == KioskSessionState.StaffHelp && fever.FlowPageId == "feverHelp", "fever routes to staff before lookup");
         var newcomer = Start("new"); Add(chart: false); newcomer = Questions(newcomer, "yes", "no");
@@ -103,6 +104,23 @@ internal static class KioskFlowTests
             "new patient candidates route to questionnaire and certificate checks");
         var mismatch = Start("mismatch"); Add(reserved: false); mismatch = Questions(mismatch, "yes", "no");
         check(mismatch.State == KioskSessionState.StaffHelp && mismatch.Message.Contains("予約の回答"), "confirmed lookup mismatch overrides configurable guidance");
+
+        var firstVisit = Start("first-no-reservation"); var firstCapture = Add(chart: false, reserved: false);
+        firstVisit = Questions(firstVisit, "yes", "no");
+        check(firstVisit.Category == ReceptionCategory.NewWithoutReservation && firstVisit.State == KioskSessionState.StaffHelp &&
+            firstVisit.Title == KioskGuidance.NoReservationTitle && firstVisit.Message.Contains("受付窓口") && firstVisit.Message.Contains("初めて"),
+            "confirmed first-time no-reservation patient receives explicit counter guidance even after answering reserved");
+        check(!WalkInAssignment.CanQueue(firstCapture) && firstVisit.Automation is null && !firstCapture.AssignmentRequested,
+            "first-time no-reservation patient cannot receive a dummy assignment or Kiosk automation");
+        options = KioskOptions.Load(root);
+        options.Flow.Page("lookup").Routes.Single(r => r.Variable == "category" && r.Value == "NewWithoutReservation").NextPageId = "reservedDone";
+        options.Flow.Page("reservedDone").Message = "受付完了";
+        options.Save(root);
+        var customFirst = Start("custom-first-no-reservation"); Add(chart: false, reserved: false);
+        customFirst = Questions(customFirst, "yes", "no");
+        check(customFirst.FlowPageId == "reservedDone" && customFirst.State == KioskSessionState.StaffHelp &&
+            customFirst.Title == KioskGuidance.NoReservationTitle && customFirst.Message != "受付完了" && customFirst.Automation is null,
+            "saved custom Finish guidance cannot bypass first-time no-reservation counter routing");
 
         options = KioskOptions.Load(root);
         options.Flow.Page("fever").NextPageId = "certificate";

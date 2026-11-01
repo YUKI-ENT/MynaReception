@@ -12,7 +12,7 @@ internal static class AutomaticRegistrationTests
     public static async Task Run(Action<bool, string> check)
     {
         string root = Path.Combine(Path.GetTempPath(), "ReceptionAgent-auto-reference-" + Guid.NewGuid().ToString("N"));
-        var settings = new AgentSettings { OqsRoot = Path.Combine(root, "oqs"), FaceXmlDirectory = Path.Combine(root, "face"),
+        var settings = new AgentSettings { OperationMode = ReceptionOperationMode.MonitorOnly, OqsRoot = Path.Combine(root, "oqs"), FaceXmlDirectory = Path.Combine(root, "face"),
             FaceTrashDirectory = Path.Combine(root, "trash"), ICallRequestDirectory = Path.Combine(root, "icall", "req"),
             ICallResponseDirectory = Path.Combine(root, "icall", "res") };
         foreach (string folder in new[] { Path.Combine(settings.OqsRoot, "req"), Path.Combine(settings.OqsRoot, "res"),
