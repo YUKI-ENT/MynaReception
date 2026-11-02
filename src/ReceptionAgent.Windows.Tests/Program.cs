@@ -350,6 +350,20 @@ static class Program
                         Check(new[] { "ファイル名", "ファイル作成日時", "XML生成日時", "取得日時", "再検証カルテ番号", "再検証" }.All(c => !grid.Columns[c]!.Visible), "main list hides filename and diagnostic columns");
                         Check(grid.Rows.Cast<DataGridViewRow>().Select(r => (string?)r.Cells["ファイル名"].Value).SequenceEqual(new[] { "synthetic.xml", "synthetic-9.xml", "synthetic-10.xml" }),
                             "main list shows oldest capture first and latest last regardless of result updates");
+                        Check(grid.CurrentRow?.Index == grid.Rows.Count - 1 && grid.CurrentRow.Selected,
+                            "initial list selects the latest capture at the bottom");
+                        grid.CurrentCell = grid.Rows[0].Cells["患者ID"];
+                        var updated = store.Get((string)grid.Rows[0].Cells["ID"].Value!); store.Save(updated);
+                        typeof(MainForm).GetMethod("Reload", PrivateInstance)!.Invoke(form, null);
+                        Check(grid.CurrentRow?.Index == 0, "result-only refresh preserves a manually selected patient");
+                        for (int i = 0; i < 30; i++)
+                            store.Capture(new ReceptionAgent.Reception.CaptureRecord { FileName = $"latest-{i}.xml", ContentHash = $"latest-{i}",
+                                GeneratedAt = DateTime.Today, CapturedAt = new DateTimeOffset(DateTime.Today.AddHours(11).AddMinutes(i)),
+                                Stage = ReceptionAgent.Reception.CaptureStage.Completed }, [1]);
+                        typeof(MainForm).GetMethod("Reload", PrivateInstance)!.Invoke(form, null);
+                        Check(grid.CurrentRow?.Index == grid.Rows.Count - 1 && grid.CurrentRow.Selected && grid.CurrentRow.Displayed &&
+                            (string?)grid.CurrentRow.Cells["ファイル名"].Value == "latest-29.xml",
+                            "new captures move the cursor to the latest bottom row and scroll it into view");
                         if (!autoStart)
                         {
                             foreach (int width in new[] { 1280, 960 })

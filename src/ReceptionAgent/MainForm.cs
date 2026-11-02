@@ -437,6 +437,9 @@ public sealed class MainForm : ReceptionAgentForm
         string next = selectedDate.ToString("yyyy-MM-dd") + ":" + string.Join('|', rows.Select(r => r.Id + r.UpdatedAt.ToString("O") + r.Conflict + jobs[r.Id]?.UpdatedAt.ToString("O")));
         if (revision == next) { UpdateActions(); return; }
         string? selected = grid.CurrentRow?.Cells["ID"].Value as string;
+        string? latest = rows.LastOrDefault()?.Id;
+        // Follow a newly arrived capture, while preserving manual selection for result-only updates.
+        if (selected is null || latest != records.LastOrDefault()?.Id) selected = latest;
         records = rows; revision = next;
         grid.DataSource = rows.Select(r => new { ID = r.Id,
             患者ID = r.Lookup?.Selected?.PatientId, 内部カルテ番号 = string.Join(",", r.Lookup?.Selected?.RawChartNumbers ?? []), 予約番号 = r.ReceptionNo,
@@ -486,7 +489,15 @@ public sealed class MainForm : ReceptionAgentForm
                 _ => SystemColors.Window
             };
         }
-        if (selected is not null) foreach (DataGridViewRow row in grid.Rows) if ((string?)row.Cells["ID"].Value == selected) { grid.CurrentCell = row.Cells["状態"]; break; }
+        if (grid.Rows.Count > 0)
+        {
+            var selectedRow = grid.Rows.Cast<DataGridViewRow>().FirstOrDefault(row => (string?)row.Cells["ID"].Value == selected)
+                ?? grid.Rows[grid.Rows.Count - 1];
+            grid.ClearSelection();
+            grid.CurrentCell = selectedRow.Cells["患者ID"];
+            selectedRow.Selected = true;
+            if (!selectedRow.Displayed) grid.FirstDisplayedScrollingRowIndex = selectedRow.Index;
+        }
         UpdateActions();
     }
     private CaptureRecord? SelectedRecord() => grid.Columns.Contains("ID") && grid.CurrentRow?.Cells["ID"].Value is string id ? store.Get(id) : null;
